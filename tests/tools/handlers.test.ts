@@ -81,10 +81,20 @@ describe('Tool Handlers', () => {
     });
 
     it('should handle search_apple_docs tool', async () => {
-      const args = { query: 'SwiftUI', type: 'all' };
+      const args = { query: 'SwiftUI' };
       const result = await handleToolCall('search_apple_docs', args, mockServer);
-      
-      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 'all');
+
+      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 10, '');
+      expect(result).toEqual({
+        content: [{ type: 'text', text: 'Search results' }],
+      });
+    });
+
+    it('should pass limit and search_scope to search_apple_docs', async () => {
+      const args = { query: 'SwiftUI', limit: 5, search_scope: 'ios' };
+      const result = await handleToolCall('search_apple_docs', args, mockServer);
+
+      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 5, 'ios');
       expect(result).toEqual({
         content: [{ type: 'text', text: 'Search results' }],
       });

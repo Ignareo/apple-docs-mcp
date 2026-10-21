@@ -101,6 +101,18 @@ describe('Response Format Validation', () => {
   beforeEach(() => {
     server = new AppleDeveloperDocsMCPServer();
     jest.clearAllMocks();
+
+    // search_apple_docs now talks to Apple's JSONL search API via global fetch.
+    // Return a minimal valid JSONL stream by default (one quickSearch result).
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      text: () => Promise.resolve(JSON.stringify({
+        kind: 'quickSearch',
+        response: { results: [{ metadata: { title: 'SwiftUI', permalink: '/swiftui' } }] },
+      }) + '\n' + JSON.stringify({ kind: 'quickSearchFinished' }) + '\n'),
+    });
   });
 
   /**
@@ -134,7 +146,7 @@ describe('Response Format Validation', () => {
 
   describe('searchAppleDocs response format', () => {
     it('should return properly formatted response for valid query', async () => {
-      const response = await server.searchAppleDocs('SwiftUI', 'all');
+      const response = await server.searchAppleDocs('SwiftUI');
       
       validateResponseFormat(response);
       expect(typeof response.content[0].text).toBe('string');
@@ -142,7 +154,7 @@ describe('Response Format Validation', () => {
     });
 
     it('should return properly formatted error response for invalid input', async () => {
-      const response = await server.searchAppleDocs('', 'all');
+      const response = await server.searchAppleDocs('');
       
       validateResponseFormat(response);
       expect(response.isError).toBe(true);
@@ -216,11 +228,10 @@ describe('Response Format Validation', () => {
 
     it('should handle network errors with proper format', async () => {
       // Mock network failure
-      const { httpClient } = await import('../src/utils/http-client.js');
-      (httpClient.getText as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
+      (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
 
-      const response = await server.searchAppleDocs('SwiftUI', 'all');
-      
+      const response = await server.searchAppleDocs('SwiftUI');
+
       validateResponseFormat(response);
       expect(response.isError).toBe(true);
     });
@@ -228,7 +239,7 @@ describe('Response Format Validation', () => {
 
   describe('Regression tests for nested response issue', () => {
     it('should not return nested content objects in searchAppleDocs', async () => {
-      const response = await server.searchAppleDocs('SwiftUI', 'all');
+      const response = await server.searchAppleDocs('SwiftUI');
       
       // Specifically check that text is not an object with content property
       const textContent = response.content[0].text;
@@ -243,7 +254,7 @@ describe('Response Format Validation', () => {
     });
 
     it('should prevent double-wrapping of response content', async () => {
-      const response = await server.searchAppleDocs('SwiftUI', 'all');
+      const response = await server.searchAppleDocs('SwiftUI');
       
       // Check that the response is not double-wrapped
       expect(response.content).toBeDefined();
@@ -327,7 +338,7 @@ describe('Response Format Validation', () => {
 
   describe('Response size and performance validation', () => {
     it('should return reasonable response sizes', async () => {
-      const response = await server.searchAppleDocs('SwiftUI', 'all');
+      const response = await server.searchAppleDocs('SwiftUI');
       
       validateResponseFormat(response);
       
@@ -337,17 +348,21 @@ describe('Response Format Validation', () => {
     });
 
     it('should handle large responses gracefully', async () => {
-      // Mock a large response
-      const largeHtml = '<html><body><ul class="search-results">' + 
-        '<li class="search-result">'.repeat(100) +
-        '<article><h1>Test Result</h1><p>Description</p></article></li>'.repeat(100) +
-        '</ul></body></html>';
-      
-      const { httpClient } = await import('../src/utils/http-client.js');
-      (httpClient.getText as jest.Mock).mockResolvedValueOnce(largeHtml);
+      // Mock a large JSONL payload with many quickSearch results
+      const manyResults = Array.from({ length: 100 }, (_, i) => ({
+        metadata: { title: `Test Result ${i}`, permalink: `/documentation/result${i}` },
+      }));
+      const largeJsonl = JSON.stringify({ kind: 'quickSearch', response: { results: manyResults } }) + '\n';
 
-      const response = await server.searchAppleDocs('SwiftUI', 'all');
-      
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        text: () => Promise.resolve(largeJsonl),
+      });
+
+      const response = await server.searchAppleDocs('SwiftUI');
+
       validateResponseFormat(response);
       // Should handle large responses without breaking format
       expect(response.content[0].text).toBeDefined();

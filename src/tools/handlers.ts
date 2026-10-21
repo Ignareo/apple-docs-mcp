@@ -124,7 +124,11 @@ export const toolHandlers: Record<string, ToolHandler> = {
 
   search_apple_docs: async (args, server) => {
     const validatedArgs = searchAppleDocsSchema.parse(args);
-    return await server.searchAppleDocs(validatedArgs.query, validatedArgs.type);
+    return await server.searchAppleDocs(
+      validatedArgs.query,
+      validatedArgs.limit,
+      validatedArgs.search_scope,
+    );
   },
 
   get_apple_doc_content: async (args, server) => {

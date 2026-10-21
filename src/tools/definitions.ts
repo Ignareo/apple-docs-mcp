@@ -11,7 +11,7 @@ import { searchFrameworkSymbolsTool } from './search-framework-symbols.js';
 export const toolDefinitions: Tool[] = [
   {
     name: 'search_apple_docs',
-    description: 'Search Apple Developer Documentation for APIs, frameworks, guides, and samples. Best for finding specific APIs, classes, or methods. For browsing sample code projects, use get_sample_code. For WWDC videos, use the dedicated WWDC tools (list_wwdc_videos, search_wwdc_content).',
+    description: 'Search Apple Developer Documentation for APIs, frameworks, guides, and samples (backed by Apple\'s official search API, WWDC23+ coverage). Best for finding specific APIs, classes, or methods. For browsing sample code projects, use get_sample_code. For WWDC videos, use the dedicated WWDC tools (list_wwdc_videos, search_wwdc_content).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -19,10 +19,15 @@ export const toolDefinitions: Tool[] = [
           type: 'string',
           description: 'Search query for Apple Developer Documentation. Tips: Use specific API names (e.g., "UIViewController"), framework names (e.g., "SwiftUI"), or technical terms. Avoid generic terms like "how to" or "tutorial". Examples: "NSPredicate", "SwiftUI List", "Core Data migration", "URLSession authentication".',
         },
-        type: {
+        limit: {
+          type: 'integer',
+          description: 'Max results to return (1-30, default 10).',
+          default: 10,
+        },
+        search_scope: {
           type: 'string',
-          enum: ['all', 'documentation', 'sample'],
-          description: 'Type of content to filter. Use "all" for comprehensive results, "documentation" for API references/guides, "sample" for code snippets. Note: "sample" returns individual code examples, not full projects. For complete sample projects, use get_sample_code instead. Default: "all".',
+          description: 'Optional Apple search scope filter (pass-through; empty = all scopes).',
+          default: '',
         },
       },
       required: ['query'],

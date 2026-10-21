@@ -1,313 +1,310 @@
 import { jest } from '@jest/globals';
-import { parseSearchResults } from '../../src/tools/search-parser.js';
+import { formatSearchResults, searchAppleDocs } from '../../src/tools/search-parser.js';
+import { parseJsonl, dedupeMerge } from '../../src/tools/search-api-client.js';
+import type { AppleSearchApiResult } from '../../src/types/search.js';
 
-// Mock the cache to prevent interference between tests
-jest.mock('../../src/utils/cache.js', () => ({
-  searchCache: {
-    get: jest.fn().mockReturnValue(null),
-    set: jest.fn(),
-  },
-  generateUrlCacheKey: jest.fn((url, params) => `${url}-${params.query}`),
-}));
+// ---------------------------------------------------------------------------
+// Fixtures — modeled on apple-search-mcp/server.py §3.2/§3.3 event structure
+// ---------------------------------------------------------------------------
 
-describe('parseSearchResults', () => {
-  const mockSearchUrl = 'https://developer.apple.com/search/?q=test';
+function makeQuickMetadata(overrides: Record<string, unknown> = {}) {
+  return {
+    title: 'UIButtonConfiguration',
+    description: 'A configuration that specifies the appearance of a button.',
+    availability: 'iOS 15.0+',
+    hierarchy: 'UIKit > UIButton',
+    permalink: '/uikit/uibuttonconfiguration',
+    kind: 'symbol',
+    ...overrides,
+  };
+}
 
-  describe('successful parsing', () => {
-    it('should parse search results from HTML', () => {
-      // Note: Apple Developer search uses DOM structure, not JavaScript objects
-      // This test reflects the actual HTML structure found on developer.apple.com/search
-      const html = `
-        <html>
-          <body>
-            <ul class="search-results">
-              <li class="search-result documentation">
-                <article>
-                  <h3 class="result-title">
-                    <a href="/documentation/uikit/uiview">UIView</a>
-                  </h3>
-                  <p class="result-description">
-                    An object that manages the content for a rectangular area on the screen.
-                  </p>
-                </article>
-              </li>
-              <li class="search-result documentation">
-                <article>
-                  <h3 class="result-title">
-                    <a href="/documentation/uikit/uiviewcontroller">UIViewController</a>
-                  </h3>
-                  <p class="result-description">
-                    An object that manages a view hierarchy for your UIKit app.
-                  </p>
-                </article>
-              </li>
-            </ul>
-          </body>
-        </html>
-      `;
+function makeSearchItem(excerpt: string, metadataOverrides: Record<string, unknown> = {}) {
+  return {
+    excerpt,
+    value: { metadata: makeQuickMetadata(metadataOverrides) },
+  };
+}
 
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
+/** Serialize events as a JSONL payload (one JSON object per line). */
+function jsonl(...events: Array<Record<string, unknown>>): string {
+  return events.map((e) => JSON.stringify(e)).join('\n') + '\n';
+}
 
-      expect(result.content[0].text).toContain('# Apple Documentation Search Results');
-      expect(result.content[0].text).toContain('**Query:** "test"');
-      expect(result.content[0].text).toContain('### 1. UIView');
-      expect(result.content[0].text).toContain('### 2. UIViewController');
-      expect(result.content[0].text).toContain('An object that manages the content');
-      expect(result.content[0].text).toContain('**Framework:** Uikit');
-    });
+/** quickSearch results arrive as one full event. */
+function quickSearchEvent(...items: Array<{ metadata: Record<string, unknown> }>) {
+  return { kind: 'quickSearch', response: { results: items } };
+}
 
-    it('should handle different result types', () => {
-      const html = `
-        <ul class="search-results">
-          <li class="search-result general">
-            <article>
-              <h3 class="result-title">
-                <a href="/documentation/guide">Getting Started</a>
-              </h3>
-              <p class="result-description">A guide to get started.</p>
-            </article>
-          </li>
-          <li class="search-result sample">
-            <article>
-              <h3 class="result-title">
-                <a href="/documentation/sample">Sample Code</a>
-              </h3>
-              <p class="result-description">Sample code project.</p>
-            </article>
-          </li>
-          <li class="search-result video">
-            <article>
-              <h3 class="result-title">
-                <a href="/videos/play/wwdc2023/10001">WWDC Video</a>
-              </h3>
-              <p class="result-description">WWDC session video.</p>
-            </article>
-          </li>
-        </ul>
-      `;
+const QUICK_SEARCH_FINISHED = { kind: 'quickSearchFinished' };
+const SEARCH_FINISHED = { kind: 'searchFinished' };
 
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-      const text = result.content[0].text;
+/** Minimal fetch Response carrying a JSONL text body. */
+function jsonlResponse(body: string, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? 'OK' : 'Error',
+    text: () => Promise.resolve(body),
+  };
+}
 
-      // Since general and video types are filtered out, we should get no results
-      expect(text).toContain('No results found');
-    });
+function mockFetchJsonl(body: string, status = 200): void {
+  (global.fetch as jest.Mock).mockResolvedValue(jsonlResponse(body, status));
+}
 
-    it('should handle empty results', () => {
-      const html = `
-        <ul class="search-results">
-          <!-- No results -->
-        </ul>
-      `;
+// ---------------------------------------------------------------------------
+// formatSearchResults — markdown output
+// ---------------------------------------------------------------------------
 
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
+describe('formatSearchResults', () => {
+  const results: AppleSearchApiResult[] = [
+    {
+      title: 'UIView',
+      description: 'An object that manages the content for a rectangular area on the screen.',
+      availability: 'iOS 2.0+',
+      hierarchy: 'UIKit',
+      permalink: '/uikit/uiview',
+    },
+    {
+      title: 'UIViewController',
+      description: 'An object that manages a view hierarchy for your UIKit app.',
+      availability: '',
+      hierarchy: '',
+      permalink: '/uikit/uiviewcontroller',
+    },
+  ];
 
-      expect(result.content[0].text).toContain('No results found for "test"');
-      expect(result.content[0].text).toContain('### Suggestions:');
-    });
+  it('should render the header with query and result count', () => {
+    const text = formatSearchResults(results, 'uikit view');
 
-    it('should extract module names from URLs', () => {
-      const html = `
-        <ul class="search-results">
-          <li class="search-result documentation">
-            <article>
-              <h3 class="result-title">
-                <a href="/documentation/swiftui/list">List</a>
-              </h3>
-              <p class="result-description">A container that presents rows of data.</p>
-            </article>
-          </li>
-          <li class="search-result documentation">
-            <article>
-              <h3 class="result-title">
-                <a href="/documentation/foundation/nsstring">NSString</a>
-              </h3>
-              <p class="result-description">A string object.</p>
-            </article>
-          </li>
-        </ul>
-      `;
-
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-      const text = result.content[0].text;
-
-      expect(text).toContain('**Framework:** Swiftui');
-      expect(text).toContain('**Framework:** Foundation');
-    });
-
-    it('should limit results when too many', () => {
-      const manyResultsHtml = Array.from({ length: 100 }, (_, i) => `
-        <li class="search-result documentation">
-          <article>
-            <h3 class="result-title">
-              <a href="/documentation/test/result${i}">Result ${i}</a>
-            </h3>
-            <p class="result-description">Description ${i}</p>
-          </article>
-        </li>
-      `).join('');
-
-      const html = `
-        <ul class="search-results">
-          ${manyResultsHtml}
-        </ul>
-      `;
-
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-      const text = result.content[0].text;
-
-      // Should show limited results
-      expect(text).toContain('### 1. Result 0');
-      expect(text).toContain('### 50. Result 49');
-      expect(text).not.toContain('Result 99');
-      expect(text).toContain('[View all results on Apple Developer]');
-    });
+    expect(text).toContain('# Apple Documentation Search Results');
+    expect(text).toContain('**Query:** "uikit view"');
+    expect(text).toContain('**Results:** 2');
   });
 
-  describe('error cases', () => {
-    it('should handle missing searchData', () => {
-      const html = '<html><body>No search data</body></html>';
+  it('should render numbered entries with hierarchy/description/availability/permalink', () => {
+    const text = formatSearchResults(results, 'uikit view');
 
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-
-      expect(result.content[0].text).toContain('No results found');
-      expect(result.content[0].text).toContain('### Suggestions:');
-    });
-
-    it('should handle malformed HTML', () => {
-      const html = `
-        <div>Invalid HTML structure without search results</div>
-      `;
-
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-
-      expect(result.content[0].text).toContain('No results found');
-    });
-
-    it('should handle missing search results container', () => {
-      const html = `
-        <html>
-          <body>
-            <!-- Page without search results -->
-          </body>
-        </html>
-      `;
-
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-
-      expect(result.content[0].text).toContain('No results found for "test"');
-    });
-
-    it('should handle results with missing fields', () => {
-      const html = `
-        <ul class="search-results">
-          <li class="search-result documentation">
-            <article>
-              <h3 class="result-title">
-                <a href="/documentation/test">Valid Result</a>
-              </h3>
-              <p class="result-description">Valid description</p>
-            </article>
-          </li>
-          <li class="search-result documentation">
-            <article>
-              <!-- Missing title -->
-              <p class="result-description">No title</p>
-            </article>
-          </li>
-          <li class="search-result documentation">
-            <article>
-              <h3 class="result-title">
-                No URL
-              </h3>
-              <p class="result-description">No URL</p>
-            </article>
-          </li>
-        </ul>
-      `;
-
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-      const text = result.content[0].text;
-
-      // Should include valid result
-      expect(text).toContain('### 1. Valid Result');
-      // Should skip invalid results
-      expect(text).not.toContain('No title');
-      expect(text).not.toContain('No URL');
-    });
+    expect(text).toContain('### 1. UIView');
+    expect(text).toContain('### 2. UIViewController');
+    expect(text).toContain('- Hierarchy: UIKit');
+    expect(text).toContain('An object that manages the content for a rectangular area on the screen.');
+    expect(text).toContain('- iOS 2.0+');
+    expect(text).toContain('- /uikit/uiview');
   });
 
-  describe('special cases', () => {
-    it('should handle special characters in query', () => {
-      const html = `
-        <ul class="search-results">
-          <li class="search-result documentation">
-            <article>
-              <h3 class="result-title">
-                <a href="/documentation/test">Result</a>
-              </h3>
-              <p class="result-description">Test</p>
-            </article>
-          </li>
-        </ul>
-      `;
+  it('should omit optional lines that are empty', () => {
+    const text = formatSearchResults(results, 'uikit view');
+    const secondEntry = text.split('### 2.')[1];
 
-      const specialQuery = 'test & <special> "quoted"';
-      const result = parseSearchResults(html, specialQuery, mockSearchUrl);
+    expect(secondEntry).not.toContain('Hierarchy:');
+    expect(secondEntry).not.toContain('availability');
+  });
 
-      expect(result.content[0].text).toContain('**Query:** "test & <special> "quoted""');
-    });
+  it('should render a No results message for an empty result set', () => {
+    const text = formatSearchResults([], 'zzz no such api');
 
-    it('should handle beta and deprecated indicators', () => {
-      const html = `
-        <ul class="search-results">
-          <li class="search-result documentation">
-            <article>
-              <h3 class="result-title">
-                <a href="/documentation/test/betaapi">BetaAPI</a>
-              </h3>
-              <p class="result-description">Beta This is a beta API.</p>
-              <span class="beta-badge">Beta</span>
-            </article>
-          </li>
-          <li class="search-result documentation">
-            <article>
-              <h3 class="result-title">
-                <a href="/documentation/test/deprecatedapi">DeprecatedAPI</a>
-              </h3>
-              <p class="result-description">Deprecated This API is deprecated.</p>
-              <span class="deprecated-badge">Deprecated</span>
-            </article>
-          </li>
-        </ul>
-      `;
+    expect(text).toContain('# Apple Documentation Search Results');
+    expect(text).toContain('**Query:** "zzz no such api"');
+    expect(text).toContain('No results.');
+  });
+});
 
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-      const text = result.content[0].text;
+// ---------------------------------------------------------------------------
+// parseJsonl — quickSearch full events + search diff stream rebuild
+// ---------------------------------------------------------------------------
 
-      expect(text).toContain('Beta This is a beta API');
-      expect(text).toContain('Deprecated This API is deprecated');
-    });
+describe('parseJsonl', () => {
+  it('should parse quickSearch results from a full event', () => {
+    const payload = jsonl(
+      quickSearchEvent({ metadata: makeQuickMetadata() }),
+      QUICK_SEARCH_FINISHED,
+    );
 
-    it('should handle archive URLs', () => {
-      const html = `
-        <ul class="search-results">
-          <li class="search-result general">
-            <article>
-              <h3 class="result-title">
-                <a href="/library/archive/documentation/test">Archived Content</a>
-              </h3>
-              <p class="result-description">Archived documentation.</p>
-            </article>
-          </li>
-        </ul>
-      `;
+    const { quick, search } = parseJsonl(payload);
 
-      const result = parseSearchResults(html, 'test', mockSearchUrl);
-      const text = result.content[0].text;
+    expect(quick).toHaveLength(1);
+    expect(quick[0].title).toBe('UIButtonConfiguration');
+    expect(quick[0].permalink).toBe('/uikit/uibuttonconfiguration');
+    expect(search).toHaveLength(0);
+  });
 
-      // Since general type is filtered out, we should get no results
-      expect(text).toContain('No results found');
-    });
+  it('should rebuild a complete document from a pure-append diff stream', () => {
+    const item = makeSearchItem('excerpt for button configuration');
+    const payload = jsonl(
+      { diff: { append: `{"results":[${JSON.stringify(item)}`, removeLast: 0 } },
+      { diff: { append: ']}' } },
+      SEARCH_FINISHED,
+    );
+
+    const { search } = parseJsonl(payload);
+
+    expect(search).toHaveLength(1);
+    expect(search[0].excerpt).toBe('excerpt for button configuration');
+    expect(search[0].value?.metadata?.title).toBe('UIButtonConfiguration');
+  });
+
+  it('should apply removeLast > 0 by deleting buffer tail chars before appending', () => {
+    const item1 = makeSearchItem('first hit', { title: 'UIWindowScene', permalink: '/uikit/uiwindowscene' });
+    const item2 = makeSearchItem('second hit', { title: 'UIWindowScene.windows', permalink: '/uikit/uiwindowscene-windows' });
+    const payload = jsonl(
+      { diff: { append: `{"results":[${JSON.stringify(item1)}`, removeLast: 0 } },
+      { diff: { append: ']}' } },
+      // The provisional closing `]}` must be removed, not kept — a naive
+      // string concat would produce invalid JSON here.
+      { diff: { append: `,${JSON.stringify(item2)}]}`, removeLast: 2 } },
+      SEARCH_FINISHED,
+    );
+
+    const { search } = parseJsonl(payload);
+
+    expect(search).toHaveLength(2);
+    expect(search.map(s => s.value?.metadata?.title)).toEqual(['UIWindowScene', 'UIWindowScene.windows']);
+  });
+
+  it('should skip malformed lines when valid events exist', () => {
+    const payload = `not json at all\n${JSON.stringify(quickSearchEvent({ metadata: makeQuickMetadata() }))}\n{{{\n`;
+
+    const { quick } = parseJsonl(payload);
+
+    expect(quick).toHaveLength(1);
+  });
+
+  it('should throw when the payload contains no valid JSONL events', () => {
+    expect(() => parseJsonl('this is not jsonl\n<html>...</html>\n')).toThrow(/no valid JSONL events/);
+  });
+
+  it('should throw when the rebuilt search buffer is unparseable and no quick results exist', () => {
+    const payload = jsonl(
+      { diff: { append: '{"results":[broken' } },
+      SEARCH_FINISHED,
+    );
+
+    expect(() => parseJsonl(payload)).toThrow(/diff stream/);
+  });
+
+  it('should tolerate a broken search buffer when quickSearch results exist', () => {
+    const payload = jsonl(
+      quickSearchEvent({ metadata: makeQuickMetadata() }),
+      { diff: { append: '{"results":[broken' } },
+      SEARCH_FINISHED,
+    );
+
+    const { quick, search } = parseJsonl(payload);
+
+    expect(quick).toHaveLength(1);
+    expect(search).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dedupeMerge — permalink dedupe, search (excerpt) first
+// ---------------------------------------------------------------------------
+
+describe('dedupeMerge', () => {
+  it('should prefer the search entry (with excerpt) over quickSearch for the same permalink', () => {
+    const quick = [makeQuickMetadata()];
+    const search = [makeSearchItem('excerpt wins over quickSearch description')];
+
+    const merged = dedupeMerge(quick, search, 10);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0].description).toBe('excerpt wins over quickSearch description');
+  });
+
+  it('should keep quickSearch-only entries and order search entries first', () => {
+    const quick = [
+      makeQuickMetadata(),
+      makeQuickMetadata({ title: 'UIButton', permalink: '/uikit/uibutton' }),
+    ];
+    const search = [makeSearchItem('hit', { title: 'UIWindowScene', permalink: '/uikit/uiwindowscene' })];
+
+    const merged = dedupeMerge(quick, search, 10);
+
+    expect(merged.map(r => r.title)).toEqual(['UIWindowScene', 'UIButtonConfiguration', 'UIButton']);
+  });
+
+  it('should respect the limit', () => {
+    const quick = Array.from({ length: 5 }, (_, i) =>
+      makeQuickMetadata({ title: `Result ${i}`, permalink: `/documentation/result${i}` }),
+    );
+
+    const merged = dedupeMerge(quick, [], 3);
+
+    expect(merged).toHaveLength(3);
+    expect(merged.map(r => r.title)).toEqual(['Result 0', 'Result 1', 'Result 2']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// searchAppleDocs — tool entry with mocked global.fetch
+// ---------------------------------------------------------------------------
+
+describe('searchAppleDocs', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('should return formatted markdown for a full JSONL payload', async () => {
+    mockFetchJsonl(jsonl(
+      quickSearchEvent(
+        { metadata: makeQuickMetadata() },
+        { metadata: makeQuickMetadata({ title: 'UIButton', permalink: '/uikit/uibutton', description: 'A UIKit button.' }) },
+      ),
+      QUICK_SEARCH_FINISHED,
+      { diff: { append: `{"results":[${JSON.stringify(makeSearchItem('excerpt for button configuration'))}]}` } },
+      SEARCH_FINISHED,
+    ));
+
+    const result = await searchAppleDocs('UIButton configuration');
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain('# Apple Documentation Search Results');
+    expect(text).toContain('**Query:** "UIButton configuration"');
+    // search entry (with excerpt) wins over the quickSearch duplicate
+    expect(text).toContain('excerpt for button configuration');
+    const firstEntry = text.split('### 2.')[0];
+    expect(firstEntry).not.toContain('A configuration that specifies the appearance of a button.');
+    expect(text).toContain('### 2. UIButton');
+    expect(text).toContain('A UIKit button.');
+  });
+
+  it('should return isError for an empty query without calling the backend', async () => {
+    const result = await searchAppleDocs('   ');
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('query must be a non-empty string');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('should return isError mentioning interface change on HTTP 4xx/5xx', async () => {
+    mockFetchJsonl('Server Error', 500);
+
+    const result = await searchAppleDocs('UIButton');
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/HTTP 500/);
+    expect(result.content[0].text).toMatch(/undocumented Apple interface and may have changed/);
+  });
+
+  it('should return isError mentioning interface change on network failure', async () => {
+    (global.fetch as jest.Mock).mockRejectedValue(new Error('fetch failed'));
+
+    const result = await searchAppleDocs('UIButton');
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/undocumented Apple interface and may have changed/);
+  });
+
+  it('should return isError instead of a silent No results on unparseable payloads', async () => {
+    mockFetchJsonl('<html><body>app shell, no JSONL</body></html>');
+
+    const result = await searchAppleDocs('UIButton');
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/undocumented Apple interface and may have changed/);
+    expect(result.content[0].text).not.toMatch(/^# Apple Documentation Search Results[\s\S]*No results\.$/);
   });
 });

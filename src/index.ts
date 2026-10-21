@@ -3,7 +3,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { parseSearchResults } from './tools/search-parser.js';
+import { searchAppleDocs as runSearchAppleDocs } from './tools/search-parser.js';
 import { fetchAppleDocJson } from './tools/doc-fetcher.js';
 import { handleListTechnologies } from './tools/list-technologies.js';
 import { searchFrameworkSymbols } from './tools/search-framework-symbols.js';
@@ -16,10 +16,8 @@ import { handleFindSimilarApis } from './tools/find-similar-apis.js';
 import { handleGetDocumentationUpdates } from './tools/get-documentation-updates.js';
 import { handleGetTechnologyOverviews } from './tools/get-technology-overviews.js';
 import { handleGetSampleCode } from './tools/get-sample-code.js';
-import { APPLE_URLS } from './utils/constants.js';
 import { isValidAppleDeveloperUrl } from './utils/url-converter.js';
 import { validateInput, ErrorType, createStandardErrorResponse, createToolErrorResponse } from './utils/error-handler.js';
-import { httpClient } from './utils/http-client.js';
 import { preloadPopularFrameworks } from './utils/preloader.js';
 import { warmUpCaches, schedulePeriodicCacheRefresh } from './utils/cache-warmer.js';
 import { logger } from './utils/logger.js';
@@ -107,30 +105,17 @@ export default class AppleDeveloperDocsMCPServer {
     });
   }
 
-  public async searchAppleDocs(query: string, type: string = 'all') {
-    try {
-      // 输入验证
-      const queryValidation = validateInput(query, 'Search query');
-      if (queryValidation) {
-        return createToolErrorResponse(queryValidation, 'search_apple_docs');
-      }
-
-      // 创建 Apple Developer Documentation 搜索 URL
-      const searchUrl = `${APPLE_URLS.SEARCH}?q=${encodeURIComponent(query)}`;
-
-      logger.info(`Searching Apple docs for: ${query}`);
-
-      // 获取搜索结果页面
-      const html = await httpClient.getText(searchUrl);
-
-      // 解析并返回搜索结果，传递type参数进行过滤
-      return parseSearchResults(html, query, searchUrl, type);
-    } catch (error) {
-      if (error && typeof error === 'object' && 'type' in error) {
-        return createToolErrorResponse(error as any, 'search_apple_docs');
-      }
-      return createStandardErrorResponse(error, 'search_apple_docs');
+  public async searchAppleDocs(query: string, limit: number = 10, searchScope: string = '') {
+    // 输入验证
+    const queryValidation = validateInput(query, 'Search query');
+    if (queryValidation) {
+      return createToolErrorResponse(queryValidation, 'search_apple_docs');
     }
+
+    logger.info(`Searching Apple docs for: ${query}`);
+
+    // search-parser 内部已包含显式错误处理（isError），直接透传其结果
+    return runSearchAppleDocs(query, limit, searchScope);
   }
 
   public async getAppleDocContent(
