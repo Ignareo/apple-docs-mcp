@@ -3,6 +3,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { ZodError } from 'zod';
 import { searchAppleDocs as runSearchAppleDocs } from './tools/search-parser.js';
 import { fetchAppleDocJson } from './tools/doc-fetcher.js';
 import { handleListTechnologies } from './tools/list-technologies.js';
@@ -86,6 +87,23 @@ export default class AppleDeveloperDocsMCPServer {
       try {
         return await handleToolCall(name, args, this);
       } catch (error) {
+        // Zod schema validation failures (e.g. limit out of range) would
+        // otherwise dump a raw multi-issue ZodError JSON array on the caller.
+        // Surface only the first issue in a readable one-liner instead.
+        if (error instanceof ZodError) {
+          const issue = error.issues[0];
+          const where = issue && issue.path.length > 0 ? issue.path.join('.') : 'arguments';
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Invalid arguments for ${name}: ${where}: ${issue?.message ?? error.message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
         const appError = error instanceof Error
           ? { type: 'UNKNOWN' as const, message: error.message, originalError: error }
           : { type: 'UNKNOWN' as const, message: 'An unknown error occurred' };

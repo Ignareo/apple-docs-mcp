@@ -2,6 +2,7 @@ import { describe, it, expect, jest, beforeEach } from '@jest/globals';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { ZodError } from 'zod';
 
 // Mock all dependencies
 jest.mock('@modelcontextprotocol/sdk/server/index.js');
@@ -156,6 +157,33 @@ describe('AppleDeveloperDocsMCPServer', () => {
           {
             type: 'text',
             text: 'Error: Tool error',
+          },
+        ],
+        isError: true,
+      });
+    });
+
+    it('should render Zod validation failures as a readable one-liner instead of a raw dump', async () => {
+      const server = new AppleDeveloperDocsMCPServer();
+      const zodError = new ZodError([
+        { code: 'custom', path: ['limit'], message: 'Too big: expected number to be <=30' },
+      ]);
+      (handleToolCall as jest.Mock).mockRejectedValueOnce(zodError);
+
+      // Get the handler function
+      const callToolHandler = mockServer.setRequestHandler.mock.calls[1][1];
+      const result = await callToolHandler({
+        params: {
+          name: 'search_apple_docs',
+          arguments: { query: 'SwiftUI', limit: 99 },
+        },
+      });
+
+      expect(result).toEqual({
+        content: [
+          {
+            type: 'text',
+            text: 'Invalid arguments for search_apple_docs: limit: Too big: expected number to be <=30',
           },
         ],
         isError: true,

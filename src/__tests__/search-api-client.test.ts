@@ -11,6 +11,12 @@
  *   3. error paths — empty query, HTTP 4xx/5xx, network errors and
  *      unparseable payloads must surface as isError with an
  *      "interface may have changed" hint; a silent "No results" is forbidden.
+ *   4. protocol-shape guard — a payload of valid JSON lines that match none
+ *      of the known event shapes must error out, not silently report
+ *      "No results" (regression guard for the recognized-events check).
+ *   5. retry behavior — transient failures (5xx/network) are retried with
+ *      backoff, deterministic 4xx fail fast, and outcomes are fed back to
+ *      the UserAgentPool (markSuccess/markFailure).
  *
  * HTTP is mocked via global.fetch (tests/setup.ts already installs a jest
  * mock there), so no nock/msw dependency is required.
@@ -20,9 +26,11 @@ import {
   API_URL,
   dedupeMerge,
   parseJsonl,
+  postQuery,
   searchAppleDocsApi,
 } from '../tools/search-api-client.js';
 import { formatSearchResults, searchAppleDocs, searchAppleDocsTool } from '../tools/search-parser.js';
+import { UserAgentPool } from '../utils/user-agent-pool.js';
 import type {
   AppleSearchMetadata,
   AppleSearchStreamItem,
@@ -160,6 +168,13 @@ function jsonlResponse(body: string, status = 200): Response {
 
 beforeEach(() => {
   mockFetch.mockReset();
+  // Keep retry backoff negligible in unit tests (postQuery reads these per call).
+  process.env.SEARCH_API_RETRY_DELAY_MS = '1';
+});
+
+afterEach(() => {
+  delete process.env.SEARCH_API_RETRY_DELAY_MS;
+  delete process.env.SEARCH_API_MAX_RETRIES;
 });
 
 // ---------------------------------------------------------------------------
@@ -293,6 +308,8 @@ describe('searchAppleDocs: error paths', () => {
     expect(result.content[0].text).toMatch(/HTTP 500/);
     // forbidden: silently reporting "no results"
     expect(result.content[0].text).not.toContain('No results.');
+    // 5xx is transient: all attempts (initial + 3 retries) were used
+    expect(mockFetch).toHaveBeenCalledTimes(4);
   });
 
   it('returns isError mentioning the interface may have changed on HTTP 4xx', async () => {
@@ -303,6 +320,8 @@ describe('searchAppleDocs: error paths', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/undocumented Apple interface and may have changed/i);
     expect(result.content[0].text).not.toContain('No results.');
+    // deterministic client error: fail fast, no retries
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
   it('returns isError mentioning the interface may have changed on network failure', async () => {
@@ -313,6 +332,8 @@ describe('searchAppleDocs: error paths', () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/undocumented Apple interface and may have changed/i);
     expect(result.content[0].text).not.toContain('No results.');
+    // network failures are retried until exhaustion
+    expect(mockFetch).toHaveBeenCalledTimes(4);
   });
 
   it('returns isError when the payload has no parseable JSONL events (shape change)', async () => {
@@ -326,6 +347,33 @@ describe('searchAppleDocs: error paths', () => {
     expect(result.content[0].text).not.toContain('No results.');
   });
 
+  it('returns isError when every JSONL line is valid JSON but matches no known event shape', async () => {
+    // Regression guard: previously validEvents > 0 alone let an unrecognized
+    // payload fall through to a silent "No results." — the exact failure
+    // mode the "interface may have changed" hard constraint forbids.
+    mockFetch.mockResolvedValue(jsonlResponse('{"foo":1}\n{"bar":2}\n'));
+
+    const result = await searchAppleDocs('UIButton');
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/no recognized Apple search events/);
+    expect(result.content[0].text).toMatch(/undocumented Apple interface and may have changed/i);
+    expect(result.content[0].text).not.toContain('No results.');
+  });
+
+  it('still tolerates unknown shapes when at least one recognized event is present', async () => {
+    // A single control marker proves the protocol is intact even if Apple
+    // adds new event kinds alongside the known ones.
+    mockFetch.mockResolvedValue(jsonlResponse(
+      jsonl({ foo: 1 }, SEARCH_FINISHED),
+    ));
+
+    const result = await searchAppleDocs('UIButton');
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('No results.');
+  });
+
   it('a valid empty result set still reports "No results" without isError', async () => {
     mockFetch.mockResolvedValue(jsonlResponse(
       jsonl(QUICK_SEARCH_FINISHED, SEARCH_FINISHED),
@@ -335,5 +383,91 @@ describe('searchAppleDocs: error paths', () => {
 
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('No results.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. retry behavior + User-Agent pool feedback
+// ---------------------------------------------------------------------------
+
+describe('postQuery: retries and User-Agent pool feedback', () => {
+  it('recovers from a transient 5xx by retrying and returns results', async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonlResponse('Server Error', 500))
+      .mockResolvedValueOnce(jsonlResponse(pureAppendStream()));
+
+    const result = await searchAppleDocs('UIButton configuration');
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('**Results:** 2');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovers from a transient network error by retrying', async () => {
+    mockFetch
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(jsonlResponse(pureAppendStream()));
+
+    const result = await searchAppleDocs('UIButton configuration');
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('**Results:** 2');
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a 429 rate-limit response', async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonlResponse('Too Many Requests', 429))
+      .mockResolvedValueOnce(jsonlResponse(pureAppendStream()));
+
+    const result = await searchAppleDocs('UIButton configuration');
+
+    expect(result.isError).toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports timeouts as an explicit error without retrying', async () => {
+    const abortError = new Error('This operation was aborted');
+    abortError.name = 'AbortError';
+    mockFetch.mockRejectedValue(abortError);
+
+    const result = await searchAppleDocs('UIButton');
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/timed out/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('feeds outcomes back to the UserAgentPool (markSuccess / markFailure)', async () => {
+    const successSpy = jest.spyOn(UserAgentPool.prototype, 'markSuccess');
+    const failureSpy = jest.spyOn(UserAgentPool.prototype, 'markFailure');
+    try {
+      // success path
+      mockFetch.mockResolvedValueOnce(jsonlResponse(pureAppendStream()));
+      await postQuery('UIKit button');
+      expect(successSpy).toHaveBeenCalledTimes(1);
+      expect(successSpy.mock.calls[0][0]).toMatch(/Safari|Mozilla/);
+      expect(failureSpy).not.toHaveBeenCalled();
+
+      // failure path — 404 is deterministic: exactly one markFailure with status
+      successSpy.mockClear();
+      failureSpy.mockClear();
+      mockFetch.mockResolvedValueOnce(jsonlResponse('Not Found', 404));
+      await expect(postQuery('UIKit button')).rejects.toThrow(/HTTP 404/);
+      expect(successSpy).not.toHaveBeenCalled();
+      expect(failureSpy).toHaveBeenCalledTimes(1);
+      expect(failureSpy.mock.calls[0][1]).toBe(404);
+    } finally {
+      successSpy.mockRestore();
+      failureSpy.mockRestore();
+    }
+  });
+
+  it('respects SEARCH_API_MAX_RETRIES=0 (single attempt, no retry)', async () => {
+    process.env.SEARCH_API_MAX_RETRIES = '0';
+    mockFetch.mockResolvedValue(jsonlResponse('Server Error', 500));
+
+    await expect(postQuery('UIKit button')).rejects.toThrow(/HTTP 500/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });

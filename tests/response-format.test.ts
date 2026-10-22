@@ -113,6 +113,13 @@ describe('Response Format Validation', () => {
         response: { results: [{ metadata: { title: 'SwiftUI', permalink: '/swiftui' } }] },
       }) + '\n' + JSON.stringify({ kind: 'quickSearchFinished' }) + '\n'),
     });
+
+    // postQuery retries with exponential backoff; keep unit tests fast.
+    process.env.SEARCH_API_RETRY_DELAY_MS = '1';
+  });
+
+  afterEach(() => {
+    delete process.env.SEARCH_API_RETRY_DELAY_MS;
   });
 
   /**
@@ -227,8 +234,9 @@ describe('Response Format Validation', () => {
     });
 
     it('should handle network errors with proper format', async () => {
-      // Mock network failure
-      (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
+      // Persistent network failure: every attempt (initial + retries) fails,
+      // so the tool must surface a formatted isError after exhaustion.
+      (global.fetch as jest.Mock).mockRejectedValue(new Error('Network error'));
 
       const response = await server.searchAppleDocs('SwiftUI');
 

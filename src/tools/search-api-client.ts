@@ -48,6 +48,35 @@ export const SEARCH_API_TIMEOUT_MS = 20000;
  */
 export const SEARCH_API_MAX_RESULTS = 30;
 
+/**
+ * Retry policy for postQuery, mirroring utils/http-client.ts conventions:
+ * retry server errors (5xx) and rate limiting (429) with exponential
+ * backoff, plus any network-level failure. Client errors (4xx other than
+ * 429) are deterministic and fail immediately.
+ */
+export const SEARCH_API_MAX_RETRIES = REQUEST_CONFIG.MAX_RETRIES;
+export const SEARCH_API_RETRY_DELAY_MS = REQUEST_CONFIG.RETRY_DELAY;
+
+/**
+ * Read a numeric env override (used by tests to keep the suite fast, and by
+ * operators to tune/disable retries without code changes).
+ */
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') {
+    return fallback;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : fallback;
+}
+
+/** HTTP statuses worth retrying (transient server-side conditions). */
+function isRetryableStatus(status: number): boolean {
+  return status >= 500 || status === 429;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 // Module-level User-Agent pool instance, mirroring the pool used by
 // utils/http-client.ts (initializeUserAgentPool).
 let searchUaPool: UserAgentPool | null = null;
@@ -80,7 +109,11 @@ async function pickUserAgent(): Promise<string> {
 
 /**
  * POST the query to Apple's search backend and return the raw JSONL payload.
- * Throws on network errors, timeouts and non-2xx HTTP statuses.
+ *
+ * Retries transient failures (network errors, timeouts, 5xx, 429) with
+ * exponential backoff, rotating the User-Agent per attempt and feeding
+ * success/failure back to the UserAgentPool so its disable/heal logic stays
+ * accurate. Throws on exhausted retries and non-retryable HTTP statuses.
  */
 export async function postQuery(query: string, searchScope: string = ''): Promise<string> {
   const body: Record<string, unknown> = {
@@ -92,23 +125,57 @@ export async function postQuery(query: string, searchScope: string = ''): Promis
     body.searchScope = searchScope;
   }
 
-  const userAgent = await pickUserAgent();
+  const maxRetries = envNumber('SEARCH_API_MAX_RETRIES', SEARCH_API_MAX_RETRIES);
+  const retryDelayMs = envNumber('SEARCH_API_RETRY_DELAY_MS', SEARCH_API_RETRY_DELAY_MS);
+  let lastError: Error | null = null;
 
-  const response = await fetch(API_URL, {
-    method: 'POST',
-    headers: {
-      ...SEARCH_API_HEADERS,
-      'User-Agent': userAgent,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(SEARCH_API_TIMEOUT_MS),
-  });
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const userAgent = await pickUserAgent();
+    let statusCode: number | undefined;
 
-  if (!response.ok) {
-    throw new Error(`Apple search backend returned HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
+    try {
+      const response = await fetch(API_URL, {
+        method: 'POST',
+        headers: {
+          ...SEARCH_API_HEADERS,
+          'User-Agent': userAgent,
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(SEARCH_API_TIMEOUT_MS),
+      });
+      statusCode = response.status;
+
+      if (!response.ok) {
+        throw new Error(`Apple search backend returned HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
+      }
+
+      const text = await response.text();
+      await getSearchUaPool().markSuccess(userAgent);
+      return text;
+    } catch (error) {
+      await getSearchUaPool().markFailure(userAgent, statusCode).catch(() => {
+        // Pool feedback is best-effort; never mask the original error.
+      });
+
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // A timeout is a timeout — no point burning more attempts.
+      if (lastError.name === 'AbortError') {
+        throw new Error(`Apple search backend request timed out after ${SEARCH_API_TIMEOUT_MS / 1000}s`);
+      }
+
+      // Deterministic client errors (400/403/404/...) fail fast, unretried.
+      if (statusCode !== undefined && !isRetryableStatus(statusCode)) {
+        throw lastError;
+      }
+
+      if (attempt < maxRetries) {
+        await sleep(retryDelayMs * Math.pow(2, attempt));
+      }
+    }
   }
 
-  return response.text();
+  throw lastError ?? new Error('Apple search backend request failed after retries');
 }
 
 /**
@@ -133,20 +200,31 @@ function extractQuickResults(event: Record<string, unknown>): AppleSearchMetadat
 }
 
 /**
+ * Event shapes that prove the payload still speaks the expected protocol.
+ * `quickSearchFinished` / `searchFinished` are control markers with no
+ * payload of their own, but a stream consisting solely of unknown shapes
+ * means Apple changed the format — that must error out, never surface as a
+ * silent "No results".
+ */
+const KNOWN_EVENT_KINDS = new Set(['quickSearch', 'quickSearchFinished', 'searchFinished']);
+
+/**
  * Parse Apple's search JSONL payload:
  * `quickSearch` events carry full result arrays; `search` results arrive as a
  * stream of incremental diff events — for each diff event, remove the last
  * `removeLast` characters from the buffer, then append the `append` fragment.
  * After all events, the rebuilt buffer is parsed as a single JSON document.
  *
- * Throws when the payload contains no parseable JSONL events at all, or when
- * the rebuilt search buffer is unparseable and no quickSearch results exist —
- * both mean the response shape changed (undocumented endpoint).
+ * Throws when the payload contains no parseable JSONL events at all, when it
+ * contains none of the known protocol event shapes (response shape changed),
+ * or when the rebuilt search buffer is unparseable and no quickSearch
+ * results exist.
  */
 export function parseJsonl(payload: string): { quick: AppleSearchMetadata[]; search: AppleSearchStreamItem[] } {
   const quick: AppleSearchMetadata[] = [];
   let searchBuf = '';
   let validEvents = 0;
+  let recognizedEvents = 0;
 
   for (const rawLine of payload.split('\n')) {
     const line = rawLine.trim();
@@ -164,14 +242,22 @@ export function parseJsonl(payload: string): { quick: AppleSearchMetadata[]; sea
 
     const kind = typeof event.kind === 'string' ? event.kind : '';
     if (kind === 'quickSearch') {
+      recognizedEvents++;
       quick.push(...extractQuickResults(event));
+    } else if (KNOWN_EVENT_KINDS.has(kind)) {
+      recognizedEvents++;
     } else if ('diff' in event) {
+      recognizedEvents++;
       searchBuf = applySearchDiff(searchBuf, event.diff);
     }
   }
 
   if (validEvents === 0) {
     throw new Error('Failed to parse Apple search response: payload contained no valid JSONL events. The response format may have changed.');
+  }
+
+  if (recognizedEvents === 0) {
+    throw new Error('Failed to parse Apple search response: payload contained no recognized Apple search events (expected quickSearch, diff or *Finished markers). The response format may have changed.');
   }
 
   let search: AppleSearchStreamItem[] = [];

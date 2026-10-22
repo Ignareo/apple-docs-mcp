@@ -130,6 +130,18 @@ describe('Tool Handlers', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('Validation failed: query is required');
     });
+
+    it('should render Zod validation failures as a readable one-liner', async () => {
+      // Real ZodError from the actual schema (limit out of range)
+      const result = await handleToolCall('search_apple_docs', { query: 'SwiftUI', limit: 99 }, mockServer);
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe(
+        'Invalid arguments for search_apple_docs: limit: Too big: expected number to be <=30',
+      );
+      // forbidden: raw ZodError JSON dump
+      expect(result.content[0].text).not.toContain('"origin"');
+    });
   });
 
   describe('toolHandlers', () => {

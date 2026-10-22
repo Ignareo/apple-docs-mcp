@@ -2,6 +2,7 @@
  * Tool handlers for Apple Developer Documentation MCP Server
  */
 
+import { ZodError } from 'zod';
 import {
   searchAppleDocsSchema,
   getAppleDocContentSchema,
@@ -327,6 +328,21 @@ export async function handleToolCall(
 
     return await handler(args, server) as { content: Array<{ type: string; text: string }>; isError?: boolean };
   } catch (error) {
+    // Zod schema validation failures would otherwise dump a raw multi-issue
+    // ZodError JSON array on the caller. Surface only the first issue in a
+    // readable one-liner instead.
+    if (error instanceof ZodError) {
+      const issue = error.issues[0];
+      const where = issue && issue.path.length > 0 ? issue.path.join('.') : 'arguments';
+      return {
+        content: [{
+          type: 'text',
+          text: `Invalid arguments for ${toolName}: ${where}: ${issue?.message ?? error.message}`,
+        }],
+        isError: true,
+      };
+    }
+
     // Return error response for validation errors and unknown tools
     return {
       content: [{

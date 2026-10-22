@@ -244,6 +244,12 @@ describe('dedupeMerge', () => {
 describe('searchAppleDocs', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // postQuery retries with exponential backoff; keep unit tests fast.
+    process.env.SEARCH_API_RETRY_DELAY_MS = '1';
+  });
+
+  afterEach(() => {
+    delete process.env.SEARCH_API_RETRY_DELAY_MS;
   });
 
   it('should return formatted markdown for a full JSONL payload', async () => {

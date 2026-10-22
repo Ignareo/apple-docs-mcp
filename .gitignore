@@ -13,3 +13,5 @@ coverage/
 .claude/
 .kiro/
 CLAUDE.md
+.corepack-home/
+.npm-cache/
