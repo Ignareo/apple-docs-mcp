@@ -6,6 +6,41 @@
 
 ## 变更条目
 
+### 2026-10-23 — feat: 带日期更新页 + 搜索 locale + framework 索引缓存复用 + 渲染边角
+
+- **分支**：`fix/search-apple-jsonl-api`（commit `9d444ff`，26 文件，+2855/−272）
+- **状态**：已推送 fork
+- **问题**（来自 `research/REPORT.md` §8 待办的第 2/4/5/6/7 项）：
+  1. `get_documentation_updates` 只是静态字母序链接目录，没有日期、没有"新变化"；Apple 的 `/documentation/updates/<tech>` 明明有带月份小节的内容却从不去取。
+  2. `search_apple_docs` 无法本地化标题（中文/日文用户看 WWDC 条目仍是英文）。
+  3. 框架预热缓存 key 与真实查询 key 永远不相等（预热白下载）；索引请求沿用 30s 全局超时，大索引抖动即失败；无 path 的 GroupMarker 生成 `…/undefined` 链接，且 "Found: N" 实为截断后的数量。
+  4. 文档渲染仍有边角丢失：tabNavigator 只渲染第一个 tab；Parameters 只取每参数第一段 inlineContent（嵌套列表/代码/aside 全丢）；图片以 inline run 形式出现时完全不渲染；`termList`/`row`/`video` 块未知。
+  5. 四语言 README 与工具描述仍有 2012/13 years/不存在的工具名/30 条上限等过时文案。
+- **改动**：
+  - `get_documentation_updates` 新增 `detail=auto|index|timeline`：给 `technology` 时解析 `/index/updates` 的 technology→slug（大小写/空格/连字符归一），抓 `/tutorials/data/documentation/updates/<slug>.json`，把 "September 2026" 等 heading 渲染成 `## 日期段`、其余 heading 成子主题，reference 转 markdown 链接、codeVoice 转行内代码；单条 400 字符、输出 14K 硬上限、`limit`/`year`/`searchQuery` 过滤；未知技术名返回 `isError` 并列 20 个合法值；index 模式输出与缓存键保持原样。
+  - `search_apple_docs` 新增 `locale`（`en-US`/`zh-CN`/`ja-JP`/`ko-KR`，实测仅这四个真正本地化），透传 Apple `targetResultLocale`，搜索缓存键加入 locale。
+  - `search_framework_symbols`：原始索引 JSON 单独缓存（`framework-index-json:<url>`，工具与 preloader 同键、in-flight 去重），格式化结果仍按 limit 缓存；索引超时提到 60s（`APPLE_DOCS_FRAMEWORK_INDEX_TIMEOUT_MS`）并给可执行提示；跳过无 path 的 groupMarker、空标题；输出 `Found X of Y`（全量计数）。
+  - `preloader`：预热改用同一原始索引 key，并发从 `Promise.all` 降到 2（`APPLE_DOCS_PRELOAD_ENABLED/CONCURRENCY/DELAY_MS` 可调），启动期不再抢带宽。
+  - 渲染：tabNavigator 渲染全部 tab（4 tab / 2.5K 字符预算 + 省略标记）；Parameters 用 `formatContentBlocks` 完整渲染并兼容旧 `inlineContent`；inline image（reference/block variants、caption、`name` 兜底）与 `termList`/`row`/`columns`/`video` 块支持。
+  - 文案：`definitions.ts` + 各工具文件去掉 "Perfect for / Essential for" 营销句，补 60 条上限、`detail`、locale 作用范围、`Found X of Y` 等真实语义；四份 README 工具表对齐 18 个工具、统一 2014–2025 / 1,266 sessions / snapshot 2025-07-18、删除 4 个不存在的工具名。
+  - 新增 `scripts/refresh-wwdc-catalog.mjs`（`npm run wwdc:audit` / `wwdc:refresh`）：从 `/videos/wwdc<year>/` 解析 session 目录，默认只审计、不写数据；`--write-catalog` 可选，且明确不伪造 transcript/code（Apple 的 transcript 由 JS/AJAX 加载，静态 HTML 取不到）。
+  - 审计与验证脚本：`research/verify-batch3.mjs`（19 项真实调用断言）；`research/REPORT.md` 增补 §8 第二批实现记录 / §9 验证命令 / §10 剩余待办。
+- **测试/验证**：`npx tsc --noEmit` ✅ / `npx jest` 625/625（34 suites，基线 587）✅ / `npm run lint` 0 error（199 存量 warning）✅ / `npm run build` ✅ / `research/verify-batch3.mjs` 19/19 ✅。真实前后对比：SwiftUI 更新页 282 字符链接目录 → 13,446 字符 / 188 条变更 / 3 个日期段；`WWDC 2024`+`zh-CN` 返回中文 WWDC 标题与 `/cn/` URL；uikit 同级 limit 冷 2,421ms → 热 1–5ms，`undefined` 链接 57/200 → 0；UIButton 1→2 tab、0→2 图，declaring-a-custom-view 0→4 图，HIG buttons 0→23 图 + 2 video；URLSession init 参数 1,618→2,201 字符。
+- **备注**：`detail=auto` 只在给了 `technology` 时切 timeline，旧的 index 行为与缓存键完全保留；timeline 命中缓存时仍会重拉 ~80KB index 解析 slug（~1s，待优化）；WWDC 目录脚本 `--year 2025` 验证 122/122 已存在、`--year 2026` 识别 138 个新 session，但数据未入包（包体积决策待定）。
+
+---
+
+### 2026-10-23 — fix: 文档渲染重建 + WWDC 输出预算 + 假指标清理 + 错误契约统一
+
+- **分支**：`fix/search-apple-jsonl-api`（commit `2a87777`，41 文件，+4035/−597）
+- **状态**：已推送 fork
+- **问题**（`research/REPORT.md` §2 的 P0/P1）：文档内容系统性损坏（代码围栏闭合符缺 `\n`、See Also/话题链接 404、正文用原始 slug 当标题、文章页 0 代码块、符号页丢表格/aside/list/image、废弃状态不显示）；WWDC 工具最坏 400+ KB；假指标（写死 Similarity N/10、"Found 200" 实为 11,162 里的 200、`undefined` 链接）；失败伪装成功（`[object Object]`、WWDC handler 不设 `isError`）。
+- **改动**：统一 block renderer（heading/paragraph/codeListing/table/aside/有序无序列表/image/links/tabNavigator + 内联 codeVoice/emphasis/link/reference）并在文章页与符号页复用；链接与引用标题统一走 `references[id].url/title`；`deprecatedAt` + `deprecationSummary`；HIG `/design/...` 映射到 `/tutorials/data/design/...json`；WWDC 输出预算（transcript 默认 12K、视频代码 8K/单例 1.5K、snippet 300、每视频 1 条、code example 1.5K）+ `year/topic/language` 校验 + 快照日期上屏；删 `find_similar_apis` 写死相似度，改来源标注 + deprecated 提示；`get_related_apis` 全局 60 条上限 + 分区 + 真实总数；`list_technologies` per-category limit + 真实总数；`get_platform_compatibility` 合并为一张表并识别废弃；`describeError/describeToolError` 统一所有失败路径 + `isError:true`；更新页把 "Past releases" 下的 WWDC 条目正确归类。
+- **测试/验证**：`npx tsc --noEmit` ✅ / `npx jest` 587/587 ✅ / `npm run lint` 0 error ✅ / `npm run build` ✅ / `research/verify-batch2.mjs` 15 个真实调用 ✅。关键数字：文章页 0→7 代码块 + 6 标题；UIButton 恢复 17 行表格 + 2 aside；`search_wwdc_content(limit:100)` 403.9KB→39.3KB；`get_wwdc_video(2021,10018)` 179.6KB→23.5KB；UIView related 37.4KB/183→10.6KB/60；technologies 36KB（200/407）→14KB（110/407）。
+- **备注**：`get_apple_doc_content` 的 4 个 `include*` 开关与 18 个工具名未动（合并工具属破坏性变更，需另行确认）。
+
+---
+
 ### 2026-10-22 — fix: 堵静默空结果漏洞 + 重试/UA 反馈接线 + 参数错误可读化
 
 - **分支**：`fix/search-apple-jsonl-api`（commit `1c05af9`，9 文件，+329/−20）
@@ -56,4 +91,4 @@
 - **备注**：<环境坑、回滚方式、与其他变更的依赖>
 ```
 
-*维护人：Ignareo。最后更新：2026-10-22。*
+*维护人：Ignareo。最后更新：2026-10-23。*
