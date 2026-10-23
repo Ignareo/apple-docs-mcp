@@ -145,8 +145,9 @@ export async function searchAppleDocsTool(args: {
   query: string;
   limit?: number;
   search_scope?: string;
+  locale?: string;
 }): Promise<ToolResponse> {
-  return searchAppleDocs(args.query, args.limit, args.search_scope);
+  return searchAppleDocs(args.query, args.limit, args.search_scope, args.locale);
 }
 
 /**
@@ -166,6 +167,7 @@ export async function searchAppleDocs(
   query: string,
   limit: number = 10,
   searchScope: string = '',
+  locale: string = 'en-US',
 ): Promise<ToolResponse> {
   const trimmedQuery = (query ?? '').trim();
   if (!trimmedQuery) {
@@ -177,6 +179,7 @@ export async function searchAppleDocs(
       trimmedQuery,
       limit,
       searchScope,
+      locale,
     );
 
     if (partial && results.length === 0) {

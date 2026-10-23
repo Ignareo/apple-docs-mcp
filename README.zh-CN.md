@@ -335,23 +335,35 @@ npm install && npm run build
 
 ## 🛠️ 可用工具
 
+服务器共提供 18 个工具：
+
 | 工具 | 描述 | 主要功能 |
 |------|------|----------|
-| `search_apple_docs` | 搜索 Apple 开发者文档 | 官方搜索 API，增强格式化，平台过滤 |
-| `get_apple_doc_content` | 获取详细文档内容 | JSON API 访问，可选增强分析（相关/类似 API，平台兼容性） |
-| `list_technologies` | 浏览所有 Apple 技术 | 类别过滤，语言支持，beta 状态 |
-| `get_documentation_updates` | 跟踪 Apple 文档更新 | WWDC 公告，技术更新，发布说明，beta 过滤 |
-| `get_technology_overviews` | 获取技术概览和指南 | 综合指南，分层导航，平台过滤 |
-| `get_sample_code` | 浏览 Apple 示例代码项目 | 框架过滤，测试版状态，搜索，精选示例 |
-| `search_wwdc_videos` | 搜索 WWDC 视频会议 | 关键词搜索，主题/年份过滤，会议元数据 |
-| `get_wwdc_video_details` | 获取 WWDC 视频详情和文字记录 | 完整文字记录，代码示例，资源，平台信息 |
-| `list_wwdc_topics` | 列出所有可用的 WWDC 主题 | 19 个主题类别，从 Swift 到空间计算 |
-| `list_wwdc_years` | 列出所有可用的 WWDC 年份 | 会议年份及视频数量 |
-| `get_framework_index` | 框架 API 结构树 | 分层浏览，深度控制，类型过滤 |
-| `get_related_apis` | 查找相关 API | 继承、遵循、"参见"关系 |
-| `resolve_references_batch` | 批量解析 API 引用 | 从文档中提取和解析所有引用 |
-| `get_platform_compatibility` | 平台兼容性分析 | 版本支持，beta 状态，弃用信息 |
-| `find_similar_apis` | 发现类似 API | Apple 官方推荐，主题分组 |
+| `search_apple_docs` | 搜索 Apple 开发者文档 | 官方 Apple 搜索后端；1–20 条结果（默认 10）；支持 scope 与 locale 过滤 |
+| `get_apple_doc_content` | 获取详细文档内容 | JSON API 访问，可选增强分析（相关/类似 API、平台兼容性） |
+| `list_technologies` | 浏览所有 Apple 技术 | 类别过滤、语言支持、beta 状态、真实总数 |
+| `search_framework_symbols` | 在指定框架内搜索符号 | 类、结构体、协议、通配符模式、类型过滤 |
+| `get_related_apis` | 查找相关 API | 继承、协议遵循和“参见”关系（最多 60 条，并报告真实总数） |
+| `resolve_references_batch` | 批量解析 API 引用 | 从文档页面提取并解析引用（最多 50 条） |
+| `get_platform_compatibility` | 平台兼容性分析 | 版本支持、beta 状态、弃用信息 |
+| `find_similar_apis` | 发现类似 API | 基于主题的推荐，不虚构相似度分数 |
+| `get_documentation_updates` | 跟踪 Apple 文档更新 | WWDC 公告、技术更新、发布说明；`detail=timeline` 时返回带日期的技术更新时间线 |
+| `get_technology_overviews` | 获取技术概览和指南 | 综合指南、分层导航、平台过滤 |
+| `get_sample_code` | 浏览 Apple 示例代码项目 | 框架过滤、关键词搜索、beta 状态 |
+| `list_wwdc_videos` | 列出 WWDC 会议视频 | 按年份/主题/是否有代码过滤；离线文字记录和代码 |
+| `search_wwdc_content` | 全文搜索 WWDC 文字记录和代码 | 摘要受预算限制（默认 300 字符，最大 2,000）；报告匹配总数 |
+| `get_wwdc_video` | 获取 WWDC 会议的文字记录和代码 | 文字记录预算（默认 12,000 字符）、关键词窗口、代码和资源 |
+| `get_wwdc_code_examples` | 浏览 WWDC 代码示例 | 框架/主题/年份过滤；单个示例上限（默认 1,500 字符） |
+| `browse_wwdc_topics` | 浏览 WWDC 主题类别 | 19 个主题 ID 及视频数量 |
+| `find_related_wwdc_videos` | 查找与某会议相关的 WWDC 视频 | 前置会议、后续内容、主题相似的演讲 |
+| `list_wwdc_years` | 列出可用的 WWDC 年份 | 各年份视频数量和内置数据快照 |
+
+**关键参数与上限**
+
+- `search_apple_docs`：`limit` 为 1–20（默认 10）；`search_scope` 取 `''`、`documentation`、`video`、`sample_code`、`wwdc26` 之一（不支持按框架过滤）；`locale` 取 `en-US`（默认）、`zh-CN`、`ja-JP` 或 `ko-KR`，仅本地化 WWDC/网页类条目标题。
+- `get_documentation_updates`：`detail` 取 `auto`（默认）、`index` 或 `timeline`；与 `technology` 一起使用时返回带日期的更新时间线。
+- WWDC 输出有预算限制：`get_wwdc_video` 的 `maxTranscriptChars` 默认 12,000（0 = 不限制）；`search_wwdc_content` 的 `limit` 默认 10，`snippetChars` 默认 300（最大 2,000）；`get_wwdc_code_examples` 的 `maxCodeChars` 默认 1,500（0 = 不限制）。
+- `find_similar_apis` 返回基于主题的推荐，不虚构相似度分数。
 
 
 ## 🏗️ 技术架构
@@ -361,13 +373,13 @@ apple-docs-mcp/
 ├── 🔧 src/
 │   ├── index.ts                      # MCP 服务器入口点，包含所有工具
 │   ├── tools/                        # MCP 工具实现
-│   │   ├── search-parser.ts          # HTML 搜索结果解析
+│   │   ├── search-parser.ts          # 搜索结果格式化与搜索入口
 │   │   ├── doc-fetcher.ts            # JSON API 文档获取
 │   │   ├── list-technologies.ts      # 技术目录处理
 │   │   ├── get-documentation-updates.ts # 文档更新跟踪
 │   │   ├── get-technology-overviews.ts # 技术概览和指南
 │   │   ├── get-sample-code.ts        # 示例代码库浏览器
-│   │   ├── get-framework-index.ts    # 框架结构索引
+│   │   ├── definitions.ts            # 工具定义与 JSON Schema
 │   │   ├── get-related-apis.ts       # 相关 API 发现
 │   │   ├── resolve-references-batch.ts # 批量引用解析
 │   │   ├── get-platform-compatibility.ts # 平台分析
@@ -407,6 +419,23 @@ apple-docs-mcp/
 | 技术列表 | 2 小时 | 50 项 | 很少变化，内容较大 |
 | 文档更新 | 30 分钟 | 100 项 | 定期更新，WWDC 公告 |
 | WWDC 视频数据 | 2 小时 | 无限制 | 稳定内容，本地 JSON 文件 |
+
+## 📦 WWDC 数据
+
+所有 WWDC 视频数据（2014–2025，快照 2025-07-18）都**直接打包在 npm 包中**，提供：
+
+- ✅ **零网络延迟** - WWDC 内容无需 API 调用
+- ✅ **100% 离线访问** - 无网络连接也可使用
+- ✅ **无速率限制** - 无限次 WWDC 搜索和浏览
+- ✅ **即时响应** - 所有数据均在本地可用
+
+包内包含：
+- 📹 **1,266 个 WWDC 会议视频**，含完整文字记录
+- 🏷️ **19 个主题类别**，便于分类浏览
+- 📅 **12 年内容**（2014–2025）
+- 💾 **35 MB 优化后的 JSON 数据**
+
+> **快照**：2025-07-18 · 2014–2025 · 1,266 个 session（其中 626 个含代码示例）。需要更新 npm 包才能获取更新的 WWDC 内容。
 
 ## 🧪 开发
 

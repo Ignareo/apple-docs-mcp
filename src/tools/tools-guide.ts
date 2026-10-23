@@ -28,7 +28,7 @@ export const TOOL_CATEGORIES = {
    * Use these to discover what's available
    */
   BROWSE: {
-    tools: ['list_technologies', 'search_framework_symbols', 'get_sample_code', 'list_wwdc_videos', 'browse_wwdc_topics'],
+    tools: ['list_technologies', 'search_framework_symbols', 'get_sample_code', 'list_wwdc_videos', 'browse_wwdc_topics', 'list_wwdc_years'],
     description: 'Tools for exploring available frameworks, APIs, and content',
     whenToUse: [
       'User wants to know what frameworks are available',
@@ -219,7 +219,7 @@ export const USAGE_TIPS = {
   ACCURACY: [
     'Framework names are case-sensitive in some tools',
     'Use list_technologies to get exact framework identifiers',
-    'WWDC tools have offline data from 2020-2025',
+    'WWDC tools use a bundled offline snapshot: 2014-2025, snapshot 2025-07-18',
   ],
 
   // Efficiency tips

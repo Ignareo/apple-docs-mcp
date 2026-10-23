@@ -97,6 +97,72 @@ function formatJsonDocumentation(
 }
 
 /**
+ * Inline run types Apple uses inside `inlineContent`. A parameter body whose
+ * items are all inline runs is rendered with `formatInlineContent`; anything
+ * carrying block structure (paragraph/content/items) goes through
+ * `formatContentBlocks` so nested lists, code and asides are preserved.
+ */
+const INLINE_RUN_TYPES = new Set([
+  'text',
+  'codeVoice',
+  'emphasis',
+  'strong',
+  'link',
+  'reference',
+  'image',
+  'video',
+]);
+
+function looksLikeContentBlocks(items: unknown[]): boolean {
+  return items.some((item) => {
+    if (item === null || typeof item !== 'object') {
+      return false;
+    }
+    const block = item as {
+      type?: unknown;
+      content?: unknown;
+      inlineContent?: unknown;
+      items?: unknown;
+    };
+    if (typeof block.type === 'string' && !INLINE_RUN_TYPES.has(block.type)) {
+      return true;
+    }
+    return (
+      Array.isArray(block.content) ||
+      Array.isArray(block.inlineContent) ||
+      Array.isArray(block.items)
+    );
+  });
+}
+
+/**
+ * Render one parameter's description. Real pages use `content` (array of
+ * content blocks, possibly with nested lists/code/asides); older payloads use
+ * a flat `inlineContent` array. Both shapes are supported.
+ */
+function renderParameterContent(param: unknown, jsonData: AppleDocJSON): string {
+  if (param === null || typeof param !== 'object') {
+    return '';
+  }
+  const record = param as { content?: unknown; inlineContent?: unknown };
+
+  if (Array.isArray(record.content) && record.content.length > 0) {
+    const rendered = looksLikeContentBlocks(record.content)
+      ? formatContentBlocks(record.content, jsonData)
+      : formatInlineContent(record.content, jsonData);
+    if (rendered.trim() !== '') {
+      return rendered.trim();
+    }
+  }
+
+  if (Array.isArray(record.inlineContent)) {
+    return formatInlineContent(record.inlineContent, jsonData).trim();
+  }
+
+  return '';
+}
+
+/**
  * Format specific API content (methods, properties, etc.)
  */
 function formatSpecificAPIContent(jsonData: AppleDocJSON): string {
@@ -116,18 +182,29 @@ function formatSpecificAPIContent(jsonData: AppleDocJSON): string {
           }
           break;
 
-        case 'parameters':
-          content += '## Parameters\n\n';
-          if (typedSection.parameters && Array.isArray(typedSection.parameters)) {
-            typedSection.parameters.forEach((param) => {
-              content += `**${param.name}**: `;
-              if (param.content?.[0]?.inlineContent) {
-                const paramDesc = formatInlineContent(param.content[0].inlineContent, jsonData);
-                content += `${paramDesc}\n\n`;
-              }
-            });
+        case 'parameters': {
+          if (!Array.isArray(typedSection.parameters)) {
+            break;
+          }
+          const renderedParameters: string[] = [];
+          for (const param of typedSection.parameters) {
+            const name = typeof param.name === 'string' ? param.name.trim() : '';
+            const body = renderParameterContent(param, jsonData);
+            if (name === '' && body === '') {
+              continue;
+            }
+            if (body === '') {
+              // Never emit a dangling `**name**: ` with nothing after it.
+              renderedParameters.push(`**${name}**`);
+              continue;
+            }
+            renderedParameters.push(name === '' ? body : `**${name}**: ${body}`);
+          }
+          if (renderedParameters.length > 0) {
+            content += `## Parameters\n\n${renderedParameters.join('\n\n')}\n\n`;
           }
           break;
+        }
 
         case 'content':
           content += formatContentBlocks(typedSection.content, jsonData);

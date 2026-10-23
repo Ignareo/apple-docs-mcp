@@ -130,6 +130,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       validatedArgs.query,
       validatedArgs.limit,
       validatedArgs.search_scope,
+      validatedArgs.locale,
     );
   },
 
@@ -212,6 +213,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       validatedArgs.searchQuery,
       validatedArgs.includeBeta,
       validatedArgs.limit,
+      validatedArgs.detail,
     );
   },
 

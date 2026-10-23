@@ -348,23 +348,35 @@ npm install && npm run build
 
 ## 🛠️ 사용 가능한 도구
 
+서버는 18개의 도구를 제공합니다:
+
 | 도구 | 설명 | 주요 기능 |
-|------|------|----------|
-| `search_apple_docs` | Apple 개발자 문서 검색 | 공식 검색 API, 특정 API/클래스/메서드 검색 |
-| `get_apple_doc_content` | 상세한 문서 내용 가져오기 | JSON API 액세스, 선택적 향상 분석 (관련/유사 API, 플랫폼 호환성) |
-| `list_technologies` | 모든 Apple 기술 탐색 | 카테고리 필터링, 언어 지원, 베타 상태 |
+|------|------|------------|
+| `search_apple_docs` | Apple 개발자 문서 검색 | 공식 Apple 검색 백엔드, 1–20개 결과(기본 10), scope 및 locale 필터 |
+| `get_apple_doc_content` | 상세한 문서 내용 가져오기 | JSON API 액세스, 선택적 향상 분석(관련/유사 API, 플랫폼 호환성) |
+| `list_technologies` | 모든 Apple 기술 탐색 | 카테고리 필터링, 언어 지원, 베타 상태, 실제 총계 |
 | `search_framework_symbols` | 특정 프레임워크 내 심볼 검색 | 클래스, 구조체, 프로토콜, 와일드카드 패턴, 타입 필터링 |
-| `get_related_apis` | 관련 API 찾기 | 상속, 준수, "참고" 관계 |
-| `resolve_references_batch` | API 참조 일괄 해결 | 문서에서 모든 참조 추출 및 해결 |
+| `get_related_apis` | 관련 API 찾기 | 상속, 준수, "참고" 관계(최대 60개, 실제 총계 보고) |
+| `resolve_references_batch` | API 참조 일괄 해결 | 문서 페이지에서 참조 추출 및 해결(최대 50개) |
 | `get_platform_compatibility` | 플랫폼 호환성 분석 | 버전 지원, 베타 상태, 사용 중단 정보 |
-| `find_similar_apis` | 유사한 API 발견 | Apple 공식 권장사항, 주제 그룹화 |
-| `get_documentation_updates` | Apple 문서 업데이트 추적 | WWDC 발표, 기술 업데이트, 릴리스 노트 |
+| `find_similar_apis` | 유사한 API 발견 | 주제 기반 추천, 유사도 점수 조작 없음 |
+| `get_documentation_updates` | Apple 문서 업데이트 추적 | WWDC 발표, 기술 업데이트, 릴리스 노트, `detail=timeline`일 때 날짜가 포함된 기술 업데이트 타임라인 |
 | `get_technology_overviews` | 기술 개요 및 가이드 가져오기 | 포괄적인 가이드, 계층적 탐색, 플랫폼 필터링 |
-| `get_sample_code` | Apple 샘플 코드 프로젝트 탐색 | 프레임워크 필터링 (제한 있음), 키워드 검색, 베타 상태 |
-| `search_wwdc_videos` | WWDC 비디오 세션 검색 | 키워드 검색, 주제/연도 필터링, 세션 메타데이터 |
-| `get_wwdc_video_details` | WWDC 비디오 상세 정보 및 대본 | 전체 대본, 코드 예제, 리소스, 플랫폼 정보 |
-| `list_wwdc_topics` | 사용 가능한 모든 WWDC 주제 나열 | Swift부터 공간 컴퓨팅까지 19개 주제 카테고리 |
-| `list_wwdc_years` | 사용 가능한 모든 WWDC 연도 나열 | 비디오 개수와 함께 연도 정보 |
+| `get_sample_code` | Apple 샘플 코드 프로젝트 탐색 | 프레임워크 필터링, 키워드 검색, 베타 상태 |
+| `list_wwdc_videos` | WWDC 세션 비디오 나열 | 연도/주제/코드 유무 필터, 오프라인 대본과 코드 |
+| `search_wwdc_content` | WWDC 대본과 코드 전체 텍스트 검색 | 예산이 적용된 스니펫(기본 300자, 최대 2,000), 전체 일치 수 보고 |
+| `get_wwdc_video` | WWDC 세션의 대본과 코드 가져오기 | 대본 예산(기본 12,000자), 키워드 창, 코드 및 리소스 |
+| `get_wwdc_code_examples` | WWDC 코드 예제 탐색 | 프레임워크/주제/연도 필터, 예제당 상한(기본 1,500자) |
+| `browse_wwdc_topics` | WWDC 주제 카테고리 탐색 | 19개 주제 ID와 비디오 수 |
+| `find_related_wwdc_videos` | 특정 세션과 관련된 WWDC 비디오 찾기 | 선행 세션, 후속 콘텐츠, 주제가 유사한 세션 |
+| `list_wwdc_years` | 사용 가능한 WWDC 연도 나열 | 연도별 비디오 수와 번들 데이터 스냅샷 |
+
+**주요 매개변수와 제한**
+
+- `search_apple_docs`: `limit`은 1–20(기본 10)입니다. `search_scope`는 `''`, `documentation`, `video`, `sample_code`, `wwdc26` 중 하나이며(프레임워크 필터링은 지원되지 않음), `locale`은 `en-US`(기본), `zh-CN`, `ja-JP`, `ko-KR` 중 하나로 WWDC/웹 페이지 항목 제목만 현지화합니다.
+- `get_documentation_updates`: `detail`은 `auto`(기본), `index`, `timeline` 중 하나입니다. `technology`와 함께 사용하면 날짜가 포함된 업데이트 타임라인을 반환합니다.
+- WWDC 출력에는 예산 제한이 있습니다: `get_wwdc_video`의 `maxTranscriptChars`는 기본 12,000(0 = 무제한), `search_wwdc_content`의 `limit`은 기본 10이고 `snippetChars`는 300(최대 2,000), `get_wwdc_code_examples`의 `maxCodeChars`는 기본 1,500(0 = 무제한)입니다.
+- `find_similar_apis`는 주제 기반 추천을 반환하며 유사도 점수를 만들어내지 않습니다.
 
 ## 🏗️ 기술 아키텍처
 
@@ -373,13 +385,13 @@ apple-docs-mcp/
 ├── 🔧 src/
 │   ├── index.ts                      # MCP 서버 진입점, 모든 도구 포함
 │   ├── tools/                        # MCP 도구 구현
-│   │   ├── search-parser.ts          # HTML 검색 결과 파싱
+│   │   ├── search-parser.ts          # 검색 결과 포맷팅 및 검색 진입점
 │   │   ├── doc-fetcher.ts            # JSON API 문서 가져오기
 │   │   ├── list-technologies.ts      # 기술 카탈로그 처리
 │   │   ├── get-documentation-updates.ts # 문서 업데이트 추적
 │   │   ├── get-technology-overviews.ts # 기술 개요 및 가이드
 │   │   ├── get-sample-code.ts        # 샘플 코드 라이브러리 브라우저
-│   │   ├── get-framework-index.ts    # 프레임워크 구조 인덱싱
+│   │   ├── definitions.ts            # 도구 정의 및 JSON 스키마
 │   │   ├── get-related-apis.ts       # 관련 API 발견
 │   │   ├── resolve-references-batch.ts # 일괄 참조 해결
 │   │   ├── get-platform-compatibility.ts # 플랫폼 분석
@@ -427,7 +439,7 @@ apple-docs-mcp/
 
 ## 📦 WWDC 데이터
 
-모든 WWDC 비디오 데이터 (2014-2025)는 **npm 패키지에 직접 번들링**되어 다음을 제공합니다:
+모든 WWDC 비디오 데이터(2014–2025, 스냅샷 2025-07-18)는 **npm 패키지에 직접 번들링**되어 다음을 제공합니다:
 
 - ✅ **네트워크 지연 없음** - WWDC 콘텐츠에 API 호출 불필요
 - ✅ **100% 오프라인 액세스** - 인터넷 연결 없이 작동
@@ -435,12 +447,12 @@ apple-docs-mcp/
 - ✅ **즉각적인 응답** - 모든 데이터가 로컬에서 사용 가능
 
 포함된 데이터:
-- 📹 **1,260개 이상의 WWDC 세션 비디오** 및 전체 대본
-- 🏷️ **20개 주제 카테고리**로 체계적인 탐색
-- 📅 **13년간의 콘텐츠** (2012-2025)
+- 📹 **1,266개의 WWDC 세션 비디오** 및 전체 대본
+- 🏷️ **19개 주제 카테고리**로 체계적인 탐색
+- 📅 **12년간의 콘텐츠** (2014–2025)
 - 💾 **35MB의 최적화된 JSON 데이터**
 
-> **참고**: 최신 WWDC 콘텐츠를 받으려면 패키지를 업데이트하세요.
+> **스냅샷**: 2025-07-18 · 2014–2025 · 1,266개 세션(626개에 코드 예제 포함). 최신 WWDC 콘텐츠를 받으려면 패키지를 업데이트하세요.
 
 ## ⚙️ 설정
 

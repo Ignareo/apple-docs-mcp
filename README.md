@@ -362,23 +362,35 @@ npm install && npm run build
 
 ## 🛠️ Available Tools
 
-| Tool | Description | Key Features |
+The server exposes 18 tools:
+
+| Tool | Description | Key features |
 |------|-------------|--------------|
-| `search_apple_docs` | Search Apple Developer Documentation | Official search API, find specific APIs, classes, methods |
+| `search_apple_docs` | Search Apple Developer Documentation | Official Apple search backend; 1–20 results (default 10); scope and locale filters |
 | `get_apple_doc_content` | Get detailed documentation content | JSON API access, optional enhanced analysis (related/similar APIs, platform compatibility) |
-| `list_technologies` | Browse all Apple technologies | Category filtering, language support, beta status |
-| `search_framework_symbols` | Search symbols in specific framework | Classes, structs, protocols, wildcard patterns, type filtering |
-| `get_related_apis` | Find related APIs | Inheritance, conformance, "See Also" relationships |
-| `resolve_references_batch` | Batch resolve API references | Extract and resolve all references from documentation |
+| `list_technologies` | Browse all Apple technologies | Category filtering, language support, beta status, true totals |
+| `search_framework_symbols` | Search symbols in a specific framework | Classes, structs, protocols, wildcard patterns, type filtering |
+| `get_related_apis` | Find related APIs | Inheritance, conformance and "See Also" relationships (capped at 60, true total reported) |
+| `resolve_references_batch` | Batch resolve API references | Extract and resolve references from a documentation page (max 50) |
 | `get_platform_compatibility` | Platform compatibility analysis | Version support, beta status, deprecation info |
-| `find_similar_apis` | Discover similar APIs | Apple's official recommendations, topic groupings |
-| `get_documentation_updates` | Track Apple documentation updates | WWDC announcements, technology updates, release notes |
+| `find_similar_apis` | Discover similar APIs | Topic-based recommendations, no fabricated similarity score |
+| `get_documentation_updates` | Track Apple documentation updates | WWDC announcements, technology updates, release notes; dated technology timeline with `detail=timeline` |
 | `get_technology_overviews` | Get technology overviews and guides | Comprehensive guides, hierarchical navigation, platform filtering |
-| `get_sample_code` | Browse Apple sample code projects | Framework filtering (with limitations), keyword search, beta status |
-| `search_wwdc_videos` | Search WWDC video sessions | Keyword search, topic/year filtering, session metadata |
-| `get_wwdc_video_details` | Get WWDC video details with transcript | Full transcripts, code examples, resources, platform info |
-| `list_wwdc_topics` | List all available WWDC topics | 19 topic categories from Swift to Spatial Computing |
-| `list_wwdc_years` | List all available WWDC years | Conference years with video counts |
+| `get_sample_code` | Browse Apple sample code projects | Framework filtering, keyword search, beta status |
+| `list_wwdc_videos` | List WWDC session videos | Year/topic/code filters; offline transcripts and code |
+| `search_wwdc_content` | Full-text search WWDC transcripts and code | Budgeted snippets (default 300 chars, max 2,000); total match counts |
+| `get_wwdc_video` | Get a WWDC session with transcript and code | Transcript budget (default 12,000 chars), keyword windows, code and resources |
+| `get_wwdc_code_examples` | Browse WWDC code examples | Framework/topic/year filters; per-example cap (default 1,500 chars) |
+| `browse_wwdc_topics` | Browse WWDC topic categories | 19 topic IDs with video counts |
+| `find_related_wwdc_videos` | Find WWDC videos related to a session | Prerequisites, follow-ups, thematically similar talks |
+| `list_wwdc_years` | List available WWDC years | Per-year video counts and the bundled data snapshot |
+
+**Key parameters and limits**
+
+- `search_apple_docs`: `limit` is 1–20 (default 10); `search_scope` is one of `''`, `documentation`, `video`, `sample_code`, `wwdc26` (framework filtering is not supported); `locale` is `en-US` (default), `zh-CN`, `ja-JP` or `ko-KR` and localizes only WWDC/web-page entry titles.
+- `get_documentation_updates`: `detail` is `auto` (default), `index` or `timeline`; with a `technology` it returns a dated timeline of updates.
+- WWDC output is budgeted: `get_wwdc_video` `maxTranscriptChars` defaults to 12,000 (0 = unlimited); `search_wwdc_content` `limit` defaults to 10 with `snippetChars` 300 (max 2,000); `get_wwdc_code_examples` `maxCodeChars` defaults to 1,500 (0 = unlimited).
+- `find_similar_apis` returns topic-based recommendations with no fabricated similarity score.
 
 ## 🏗️ Technical Architecture for Apple Developer Documentation Access
 
@@ -387,13 +399,13 @@ apple-docs-mcp/
 ├── 🔧 src/
 │   ├── index.ts                      # MCP server entry point with all tools
 │   ├── tools/                        # MCP tool implementations
-│   │   ├── search-parser.ts          # HTML search result parsing
+│   │   ├── search-parser.ts          # Search result formatting and search entry
 │   │   ├── doc-fetcher.ts            # JSON API documentation fetching
 │   │   ├── list-technologies.ts      # Technology catalog handling
 │   │   ├── get-documentation-updates.ts # Documentation updates tracking
 │   │   ├── get-technology-overviews.ts # Technology overviews and guides
 │   │   ├── get-sample-code.ts        # Sample code library browser
-│   │   ├── get-framework-index.ts    # Framework structure indexing
+│   │   ├── definitions.ts            # Tool definitions and JSON schemas
 │   │   ├── get-related-apis.ts       # Related API discovery
 │   │   ├── resolve-references-batch.ts # Batch reference resolution
 │   │   ├── get-platform-compatibility.ts # Platform analysis
@@ -439,7 +451,7 @@ apple-docs-mcp/
 
 ## 📦 WWDC Data
 
-All WWDC video data (2014-2025) is **bundled directly in the npm package**, providing:
+All WWDC video data (2014–2025, snapshot 2025-07-18) is **bundled directly in the npm package**, providing:
 
 - ✅ **Zero network latency** - No API calls needed for WWDC content
 - ✅ **100% offline access** - Works without internet connection
@@ -447,12 +459,12 @@ All WWDC video data (2014-2025) is **bundled directly in the npm package**, prov
 - ✅ **Instant responses** - All data is locally available
 
 The package includes:
-- 📹 **1,260+ WWDC session videos** with full transcripts
-- 🏷️ **20 topic categories** for organized browsing
-- 📅 **13 years of content** (2012-2025)
-- 💾 **35MB of optimized JSON data**
+- 📹 **1,266 WWDC session videos** with full transcripts
+- 🏷️ **19 topic categories** for organized browsing
+- 📅 **12 years of content** (2014–2025)
+- 💾 **35 MB of optimized JSON data**
 
-> **Note**: Keep your package updated to get the latest WWDC content additions.
+> **Snapshot**: 2025-07-18 · 2014–2025 · 1,266 sessions (626 with code examples). Keep the package updated to get newer WWDC content.
 
 ## ⚙️ Configuration
 

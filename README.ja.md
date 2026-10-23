@@ -327,22 +327,35 @@ npm install && npm run build
 
 ## 🛠️ 利用可能なツール
 
-| ツール | 説明 | 主要機能 |
-|-------|------|----------|
-| `search_apple_docs` | Apple 開発者ドキュメント検索 | 公式検索 API、拡張フォーマット、プラットフォームフィルタリング |
-| `get_apple_doc_content` | 詳細なドキュメントコンテンツ取得 | JSON API アクセス、オプション拡張分析（関連/類似 API、プラットフォーム互換性） |
-| `list_technologies` | すべての Apple テクノロジー閲覧 | カテゴリフィルタリング、言語サポート、ベータステータス |
-| `get_documentation_updates` | Apple ドキュメント更新追跡 | WWDC 発表、テクノロジー更新、リリースノート、ベータフィルタリング |
-| `get_technology_overviews` | テクノロジー概要とガイド取得 | 包括的なガイド、階層ナビゲーション、プラットフォームフィルタリング |
-| `get_framework_index` | フレームワーク API 構造ツリー | 階層ブラウジング、深度制御、タイプフィルタリング |
-| `get_related_apis` | 関連 API 検索 | 継承、準拠、「参照」関係 |
-| `resolve_references_batch` | API 参照バッチ解決 | ドキュメントからすべての参照を抽出・解決 |
+サーバーは 18 個のツールを提供します：
+
+| ツール | 説明 | 主な機能 |
+|--------|------|------------|
+| `search_apple_docs` | Apple 開発者ドキュメント検索 | 公式 Apple 検索バックエンド、1–20 件（デフォルト 10）、scope と locale フィルタ |
+| `get_apple_doc_content` | 詳細なドキュメントコンテンツ取得 | JSON API アクセス、オプションの拡張分析（関連/類似 API、プラットフォーム互換性） |
+| `list_technologies` | すべての Apple テクノロジー閲覧 | カテゴリフィルタリング、言語サポート、ベータステータス、実際の総数 |
+| `search_framework_symbols` | 特定フレームワーク内のシンボル検索 | クラス、構造体、プロトコル、ワイルドカードパターン、タイプフィルタリング |
+| `get_related_apis` | 関連 API 検索 | 継承、準拠、「参照」関係（最大 60 件、実際の総数を報告） |
+| `resolve_references_batch` | API 参照バッチ解決 | ドキュメントページから参照を抽出・解決（最大 50 件） |
 | `get_platform_compatibility` | プラットフォーム互換性分析 | バージョンサポート、ベータステータス、非推奨情報 |
-| `find_similar_apis` | 類似 API 発見 | Apple 公式推奨、トピックグループ化 |
-| `search_wwdc_videos` | WWDC ビデオセッション検索 | キーワード検索、トピック/年度フィルタリング、セッションメタデータ |
-| `get_wwdc_video_details` | WWDC ビデオ詳細とトランスクリプト | 完全なトランスクリプト、コード例、リソース、プラットフォーム情報 |
-| `list_wwdc_topics` | 利用可能なすべての WWDC トピックをリスト | Swift から空間コンピューティングまで 19 のトピックカテゴリ |
-| `list_wwdc_years` | 利用可能なすべての WWDC 年度をリスト | ビデオ数と共に年度情報 |
+| `find_similar_apis` | 類似 API 発見 | トピックベースの推薦、類似度スコアの捏造なし |
+| `get_documentation_updates` | Apple ドキュメント更新追跡 | WWDC 発表、テクノロジー更新、リリースノート、`detail=timeline` で日付付きの更新タイムライン |
+| `get_technology_overviews` | テクノロジー概要とガイド取得 | 包括的なガイド、階層ナビゲーション、プラットフォームフィルタリング |
+| `get_sample_code` | Apple サンプルコードプロジェクト閲覧 | フレームワークフィルタリング、キーワード検索、ベータステータス |
+| `list_wwdc_videos` | WWDC セッションビデオ一覧 | 年度/トピック/コード有無フィルタ、オフラインのトランスクリプトとコード |
+| `search_wwdc_content` | WWDC トランスクリプトとコードの全文検索 | 予算付きスニペット（デフォルト 300 文字、最大 2,000）、総一致数 |
+| `get_wwdc_video` | WWDC セッションのトランスクリプトとコード取得 | トランスクリプト予算（デフォルト 12,000 文字）、キーワードウィンドウ、コードとリソース |
+| `get_wwdc_code_examples` | WWDC コード例の閲覧 | フレームワーク/トピック/年度フィルタ、例ごとの上限（デフォルト 1,500 文字） |
+| `browse_wwdc_topics` | WWDC トピックカテゴリの閲覧 | 19 のトピック ID とビデオ数 |
+| `find_related_wwdc_videos` | セッションに関連する WWDC ビデオ検索 | 前提セッション、フォローアップ、テーマが類似したトーク |
+| `list_wwdc_years` | 利用可能な WWDC 年度一覧 | 年度ごとのビデオ数と同梱データのスナップショット |
+
+**主要なパラメータと上限**
+
+- `search_apple_docs`: `limit` は 1–20（デフォルト 10）。`search_scope` は `''`、`documentation`、`video`、`sample_code`、`wwdc26` のいずれか（フレームワークによるフィルタリングは非対応）。`locale` は `en-US`（デフォルト）、`zh-CN`、`ja-JP`、`ko-KR` で、WWDC/Web ページ系エントリのタイトルのみをローカライズします。
+- `get_documentation_updates`: `detail` は `auto`（デフォルト）、`index`、`timeline` のいずれか。`technology` と組み合わせると日付付きの更新タイムラインを返します。
+- WWDC の出力には予算上限があります: `get_wwdc_video` の `maxTranscriptChars` はデフォルト 12,000（0 = 無制限）、`search_wwdc_content` の `limit` はデフォルト 10 で `snippetChars` は 300（最大 2,000）、`get_wwdc_code_examples` の `maxCodeChars` はデフォルト 1,500（0 = 無制限）。
+- `find_similar_apis` はトピックベースの推薦を返し、類似度スコアを捏造しません。
 
 ## 🏗️ 技術アーキテクチャ
 
@@ -351,13 +364,13 @@ apple-docs-mcp/
 ├── 🔧 src/
 │   ├── index.ts                      # MCP サーバーエントリーポイント、すべてのツールを含む
 │   ├── tools/                        # MCP ツール実装
-│   │   ├── search-parser.ts          # HTML 検索結果解析
+│   │   ├── search-parser.ts          # 検索結果フォーマットと検索エントリ
 │   │   ├── doc-fetcher.ts            # JSON API ドキュメント取得
 │   │   ├── list-technologies.ts      # テクノロジーカタログ処理
 │   │   ├── get-documentation-updates.ts # ドキュメント更新追跡
 │   │   ├── get-technology-overviews.ts # テクノロジー概要とガイド
 │   │   ├── get-sample-code.ts        # サンプルコードライブラリブラウザー
-│   │   ├── get-framework-index.ts    # フレームワーク構造インデックス
+│   │   ├── definitions.ts            # ツール定義と JSON スキーマ
 │   │   ├── get-related-apis.ts       # 関連 API 発見
 │   │   ├── resolve-references-batch.ts # バッチ参照解決
 │   │   ├── get-platform-compatibility.ts # プラットフォーム分析
@@ -396,6 +409,23 @@ apple-docs-mcp/
 | テクノロジーリスト | 2時間 | 50 エントリ | 滅多に変更されない、大容量コンテンツ |
 | ドキュメント更新 | 30分 | 100 エントリ | 定期更新、WWDC 発表 |
 | WWDC ビデオデータ | 2時間 | 無制限 | 安定したコンテンツ、ローカル JSON ファイル |
+
+## 📦 WWDC データ
+
+すべての WWDC ビデオデータ（2014–2025、スナップショット 2025-07-18）は **npm パッケージに直接バンドル**されており、以下を提供します：
+
+- ✅ **ネットワーク遅延ゼロ** - WWDC コンテンツに API 呼び出しは不要
+- ✅ **100% オフラインアクセス** - インターネット接続なしで動作
+- ✅ **レート制限なし** - WWDC の検索と閲覧は無制限
+- ✅ **即時レスポンス** - すべてのデータがローカルで利用可能
+
+パッケージに含まれるもの：
+- 📹 **1,266 本の WWDC セッションビデオ**（完全なトランスクリプト付き）
+- 🏷️ **19 のトピックカテゴリ**で整理して閲覧
+- 📅 **12 年分のコンテンツ**（2014–2025）
+- 💾 **35 MB の最適化された JSON データ**
+
+> **スナップショット**: 2025-07-18 · 2014–2025 · 1,266 セッション（626 本にコード例あり）。新しい WWDC コンテンツを取得するにはパッケージの更新が必要です。
 
 ## 🧪 開発
 

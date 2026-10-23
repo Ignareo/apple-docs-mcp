@@ -1,6 +1,11 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { indexCache, generateUrlCacheKey } from '../utils/cache.js';
-import { APPLE_URLS, API_LIMITS, PROCESSING_LIMITS } from '../utils/constants.js';
+import {
+  APPLE_URLS,
+  API_LIMITS,
+  PROCESSING_LIMITS,
+  FRAMEWORK_INDEX_TIMEOUT,
+} from '../utils/constants.js';
 import { httpClient } from '../utils/http-client.js';
 import { logger } from '../utils/logger.js';
 import { normalizeFrameworkName } from '../utils/framework-mapper.js';
@@ -11,7 +16,7 @@ import { describeError, describeToolError, isNotFoundError } from '../utils/erro
  */
 export const searchFrameworkSymbolsTool: Tool = {
   name: 'search_framework_symbols',
-  description: 'Browse and search symbols within a specific Apple framework. Perfect for exploring framework APIs, finding all views/controllers/delegates in a framework, or discovering available types. Use after list_technologies to get framework identifiers.',
+  description: 'Browse and search symbols within one Apple framework: classes, structs, enums, protocols, methods and properties. Output reports "Found X of Y" and skips group-marker entries. Use list_technologies for framework identifiers.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -64,51 +69,126 @@ interface FrameworkIndex {
   };
 }
 
+/** Maximum recursion depth for nested index collections. */
+const MAX_INDEX_DEPTH = 6;
+
 /**
- * 搜索框架中的符号（类、结构体、协议等）
+ * Build the Apple index URL for a framework.
+ *
+ * Kept in one place so the preloader and the live tool share the exact same
+ * URL (and therefore the same raw-index cache entry).
  */
-// Function to find symbols recursively (defined outside to reduce complexity)
+export function getFrameworkIndexUrl(framework: string): string {
+  return `${APPLE_URLS.TUTORIALS_DATA}index/${framework.toLowerCase()}`;
+}
+
+/**
+ * Cache key for the raw framework index JSON.
+ *
+ * This key is deliberately independent of symbolType/namePattern/language/limit:
+ * the raw index is the expensive network payload and can be reused by every
+ * query against the same framework, including the startup preloader.
+ */
+export function getFrameworkIndexCacheKey(indexUrl: string): string {
+  return `framework-index-json:${indexUrl}`;
+}
+
+/**
+ * In-flight raw index requests, keyed by index URL.
+ *
+ * Preloading runs in the background while the first user queries arrive; without
+ * this map the preloader and a foreground query would download the same
+ * multi-megabyte index twice. Sharing the promise keeps it to one download.
+ */
+const inFlightIndexRequests = new Map<string, Promise<FrameworkIndex>>();
+
+/**
+ * Fetch a framework's raw index JSON, using the shared raw-index cache.
+ *
+ * The request gets a longer-than-default timeout because Apple's framework
+ * index files can be several megabytes and frequently take >30s.
+ */
+async function fetchFrameworkIndex(indexUrl: string): Promise<FrameworkIndex> {
+  const cacheKey = getFrameworkIndexCacheKey(indexUrl);
+  const cached = indexCache.get<FrameworkIndex>(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const inFlight = inFlightIndexRequests.get(indexUrl);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const request = httpClient
+    .getJson<FrameworkIndex>(indexUrl, { timeout: FRAMEWORK_INDEX_TIMEOUT })
+    .then((data) => {
+      indexCache.set(cacheKey, data);
+      return data;
+    })
+    .finally(() => {
+      inFlightIndexRequests.delete(indexUrl);
+    });
+
+  inFlightIndexRequests.set(indexUrl, request);
+  return request;
+}
+
+/**
+ * Warm the raw index cache for a single framework.
+ *
+ * This is what the background preloader should call: it only downloads/caches
+ * the raw JSON (no limit-dependent formatting), so any later query for this
+ * framework reuses it without another network round-trip.
+ */
+export async function preloadFrameworkIndex(framework: string): Promise<void> {
+  if (!framework?.trim()) {
+    return;
+  }
+  await fetchFrameworkIndex(getFrameworkIndexUrl(framework));
+}
+
+/**
+ * Whether an index item should be listed as a symbol result.
+ *
+ * - `groupMarker` entries are pure in-page headings without a `path`; listing
+ *   them produced `https://developer.apple.comundefined` links and wasted result
+ *   slots. Their children are still traversed.
+ * - Items without a title are unusable in the output.
+ */
+function isListableSymbol(item: IndexItem): boolean {
+  return item.type !== 'groupMarker' && Boolean(item.title?.trim());
+}
+
+/**
+ * Collect all matching symbols recursively (no limit, so the total can be
+ * reported exactly). Order is preserved; callers slice to the requested limit.
+ */
 function findSymbolsRecursive(
   items: IndexItem[],
   symbolType: string,
   namePattern: string | undefined,
-  limit: number,
   symbols: IndexItem[],
   depth: number = 0,
-): boolean {
-  if (depth > 6) {
-    return false;
+): void {
+  if (depth > MAX_INDEX_DEPTH) {
+    return;
   }
 
   for (const item of items) {
-    if (symbols.length >= limit) {
-      return true; // Limit reached
-    }
-
     // Check if symbol type matches
-    if (symbolType === 'all' || item.type === symbolType) {
-      // Check name pattern if provided
-      if (!namePattern || matchesPattern(item.title, namePattern)) {
-        symbols.push(item);
-      }
+    if (
+      isListableSymbol(item) &&
+      (symbolType === 'all' || item.type === symbolType) &&
+      (!namePattern || matchesPattern(item.title, namePattern))
+    ) {
+      symbols.push(item);
     }
 
-    if (item.children && symbols.length < limit) {
-      const limitReached = findSymbolsRecursive(
-        item.children,
-        symbolType,
-        namePattern,
-        limit,
-        symbols,
-        depth + 1,
-      );
-      if (limitReached) {
-        return true;
-      }
+    if (item.children) {
+      findSymbolsRecursive(item.children, symbolType, namePattern, symbols, depth + 1);
     }
   }
-
-  return false;
 }
 
 export async function searchFrameworkSymbols(
@@ -123,9 +203,18 @@ export async function searchFrameworkSymbols(
     const normalizedFramework = normalizeFrameworkName(framework);
     logger.info(`Searching ${symbolType} symbols in ${normalizedFramework} framework`);
 
-    // 获取框架索引
-    const indexUrl = `${APPLE_URLS.TUTORIALS_DATA}index/${framework.toLowerCase()}`;
-    const cacheKey = generateUrlCacheKey(indexUrl, { framework: normalizedFramework, symbolType, namePattern, language, limit });
+    const indexUrl = getFrameworkIndexUrl(framework);
+
+    // The formatted (limit-dependent) result is cached separately from the raw
+    // index JSON so that changing limit/symbolType/namePattern still reuses the
+    // already-downloaded index.
+    const cacheKey = generateUrlCacheKey(indexUrl, {
+      framework: normalizedFramework,
+      symbolType,
+      namePattern,
+      language,
+      limit,
+    });
 
     // Check cache
     const cachedResult = indexCache.get<string>(cacheKey);
@@ -133,7 +222,7 @@ export async function searchFrameworkSymbols(
       return cachedResult;
     }
 
-    const data = await httpClient.getJson<FrameworkIndex>(indexUrl);
+    const data = await fetchFrameworkIndex(indexUrl);
 
     // Get language-specific index
     const indexItems = data.interfaceLanguages?.[language] || [];
@@ -143,9 +232,11 @@ export async function searchFrameworkSymbols(
       return `Language "${language}" not available for ${framework}. Available languages: ${availableLanguages.join(', ')}`;
     }
 
-    // Find all symbols recursively
-    const symbols: IndexItem[] = [];
-    findSymbolsRecursive(indexItems, symbolType, namePattern, limit, symbols);
+    // Collect every match (cheap in-memory traversal) so we can report X of Y.
+    const allMatches: IndexItem[] = [];
+    findSymbolsRecursive(indexItems, symbolType, namePattern, allMatches);
+    const totalMatches = allMatches.length;
+    const symbols = allMatches.slice(0, limit);
 
     // Format results
     const typeLabel = symbolType === 'all' ? 'Symbols' : pluralizeType(symbolType);
@@ -168,7 +259,7 @@ export async function searchFrameworkSymbols(
         }
       }
     } else {
-      result += `**Found:** ${symbols.length} ${symbolType === 'all' ? 'symbols' : pluralizeType(symbolType).toLowerCase()}`;
+      result += `**Found:** ${symbols.length} of ${totalMatches} ${symbolType === 'all' ? 'symbols' : pluralizeType(symbolType).toLowerCase()}`;
       if (namePattern) {
         result += ` matching "${namePattern}"`;
       }
@@ -198,17 +289,27 @@ export async function searchFrameworkSymbols(
     return result;
 
   } catch (error) {
-    const hint = isNotFoundError(error)
-      ? `framework "${framework}" not found; call list_technologies for valid identifiers`
-      : undefined;
-    logger.error(`Error searching symbols in ${framework} framework: ${describeError(error)}`);
+    const message = describeError(error);
+    const timedOut = /timeout|timed out|timedout|aborted due to timeout/i.test(message);
+    let hint: string | undefined;
+    if (isNotFoundError(error)) {
+      hint = `framework "${framework}" not found; call list_technologies for valid identifiers`;
+    } else if (timedOut) {
+      hint = `the ${framework} framework index is large and the request timed out; retry — a second attempt often succeeds`;
+    }
+    logger.error(`Error searching symbols in ${framework} framework: ${message}`);
     return `Error: ${describeToolError('search_framework_symbols', error, hint)}`;
   }
 }
 
 function formatSymbolItem(item: IndexItem): string {
-  const url = `https://developer.apple.com${item.path}`;
-  let result = `- [**${item.title}**](${url})`;
+  const title = item.title.trim();
+
+  // Group markers / odd entries may lack a path. Never render `undefined` into
+  // the URL: fall back to a plain bold title.
+  let result = item.path
+    ? `- [**${title}**](https://developer.apple.com${item.path})`
+    : `- **${title}**`;
 
   const metadata = [];
   if (item.beta) {

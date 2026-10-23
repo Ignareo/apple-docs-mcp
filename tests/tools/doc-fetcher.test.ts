@@ -724,7 +724,7 @@ describe('fetchAppleDocJson', () => {
       expectWellFormedFences(text);
     });
 
-    it('renders tab navigators (first tab), links and images', async () => {
+    it('renders every tab, links and images', async () => {
       const imageIdentifier = 'media-2557338';
       const blockDoc = {
         metadata: { roleHeading: 'Article', title: 'Buttons' },
@@ -788,10 +788,11 @@ describe('fetchAppleDocJson', () => {
       const result = await fetchAppleDocJson(mockDocUrl);
       const text = result.content[0].text;
 
-      // Only the first tab is rendered, with its label.
+      // Every tab is rendered, each with its own label.
       expect(text).toContain('**Swift**');
       expect(text).toContain('```swift\n@IBAction func doSomething()\n```');
-      expect(text).not.toContain('- (IBAction)doSomething;');
+      expect(text).toContain('**Objective-C**');
+      expect(text).toContain('```objc\n- (IBAction)doSomething;\n```');
 
       // Image resolves its URL from the reference variants.
       expect(text).toContain(
@@ -804,6 +805,334 @@ describe('fetchAppleDocJson', () => {
       );
 
       expectWellFormedFences(text);
+    });
+
+    it('caps tab navigators at four tabs and 2.5K characters per tab', async () => {
+      const tabs = Array.from({ length: 6 }, (_, index) => ({
+        title: `Tab ${index + 1}`,
+        content: [
+          {
+            type: 'paragraph',
+            inlineContent: [{ type: 'text', text: `Tab ${index + 1} body.` }],
+          },
+        ],
+      }));
+      // First tab has a short block followed by one that no longer fits the budget.
+      tabs[0].content = [
+        {
+          type: 'paragraph',
+          inlineContent: [{ type: 'text', text: 'A'.repeat(2480) }],
+        },
+        {
+          type: 'codeListing',
+          syntax: 'swift',
+          code: ['let second = "block"'],
+        },
+      ];
+
+      const budgetDoc = {
+        metadata: { roleHeading: 'Article', title: 'Budgets' },
+        primaryContentSections: [
+          { kind: 'content', content: [{ type: 'tabNavigator', tabs }] },
+        ],
+      };
+
+      (apiCache.get as jest.Mock).mockReturnValue(null);
+      (httpClient.getJson as jest.Mock).mockResolvedValue(budgetDoc);
+
+      const result = await fetchAppleDocJson(mockDocUrl);
+      const text = result.content[0].text;
+
+      expect(text).toContain('**Tab 1**');
+      expect(text).toContain('**Tab 4**');
+      expect(text).not.toContain('**Tab 5**');
+      expect(text).toContain('… 2 more tabs omitted');
+      expect(text).toContain('… (tab truncated)');
+      // The block that would overflow the per-tab budget was dropped whole.
+      expect(text).not.toContain('let second = "block"');
+      expectWellFormedFences(text);
+    });
+
+    it('hard-caps a single oversized tab block at the per-tab budget', async () => {
+      const oversizedDoc = {
+        metadata: { roleHeading: 'Article', title: 'Oversized' },
+        primaryContentSections: [
+          {
+            kind: 'content',
+            content: [
+              {
+                type: 'tabNavigator',
+                tabs: [
+                  {
+                    title: 'Huge',
+                    content: [
+                      {
+                        type: 'paragraph',
+                        inlineContent: [{ type: 'text', text: 'C'.repeat(5000) }],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+
+      (apiCache.get as jest.Mock).mockReturnValue(null);
+      (httpClient.getJson as jest.Mock).mockResolvedValue(oversizedDoc);
+
+      const result = await fetchAppleDocJson(mockDocUrl);
+      const text = result.content[0].text;
+
+      expect(text).toContain('**Huge**');
+      expect(text).toContain('… (tab truncated)');
+      expect(text).not.toContain('C'.repeat(2600));
+      expect(text).toContain('C'.repeat(100));
+    });
+
+    it('renders nested parameter content (multiple blocks, asides, lists and legacy inlineContent)', async () => {
+      const parametersDoc = {
+        metadata: { roleHeading: 'Initializer', title: 'init(configuration:delegate:delegateQueue:)' },
+        primaryContentSections: [
+          {
+            kind: 'declarations',
+            declarations: [
+              {
+                tokens: [
+                  { text: 'init(' },
+                  { text: 'configuration: URLSessionConfiguration, ' },
+                  { text: 'delegate: (URLSessionDelegate)?, ' },
+                  { text: 'delegateQueue: OperationQueue?' },
+                  { text: ')' },
+                ],
+              },
+            ],
+          },
+          {
+            kind: 'parameters',
+            parameters: [
+              {
+                name: 'configuration',
+                content: [
+                  {
+                    type: 'paragraph',
+                    inlineContent: [
+                      { type: 'text', text: 'A configuration object that specifies caching policies.' },
+                    ],
+                  },
+                  {
+                    type: 'paragraph',
+                    inlineContent: [
+                      { type: 'text', text: 'Pass ' },
+                      { type: 'codeVoice', code: 'nil' },
+                      { type: 'text', text: ' to use the shared configuration.' },
+                    ],
+                  },
+                ],
+              },
+              {
+                name: 'delegate',
+                content: [
+                  {
+                    type: 'paragraph',
+                    inlineContent: [
+                      { type: 'text', text: 'A session delegate object that handles authentication.' },
+                    ],
+                  },
+                  {
+                    type: 'aside',
+                    name: 'Important',
+                    style: 'important',
+                    content: [
+                      {
+                        type: 'paragraph',
+                        inlineContent: [
+                          { type: 'text', text: 'The session keeps a strong reference to the delegate.' },
+                        ],
+                      },
+                    ],
+                  },
+                  {
+                    type: 'termList',
+                    items: [
+                      {
+                        term: { inlineContent: [{ type: 'codeVoice', code: 'data' }] },
+                        definition: {
+                          content: [
+                            {
+                              type: 'paragraph',
+                              inlineContent: [{ type: 'text', text: 'The data returned by the server.' }],
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+              {
+                name: 'delegateQueue',
+                inlineContent: [{ type: 'text', text: 'An operation queue for scheduling callbacks.' }],
+              },
+              { name: 'emptyParameter' },
+            ],
+          },
+        ],
+      };
+
+      (apiCache.get as jest.Mock).mockReturnValue(null);
+      (httpClient.getJson as jest.Mock).mockResolvedValue(parametersDoc);
+
+      const result = await fetchAppleDocJson(mockDocUrl);
+      const text = result.content[0].text;
+
+      expect(text).toContain('## Parameters');
+      expect(text).toContain(
+        '**configuration**: A configuration object that specifies caching policies.\n\nPass `nil` to use the shared configuration.',
+      );
+      expect(text).toContain('**delegate**: A session delegate object that handles authentication.');
+      expect(text).toContain('> **Important:** The session keeps a strong reference to the delegate.');
+      expect(text).toContain('- **`data`**: The data returned by the server.');
+      // Legacy shape: only a flat inlineContent array.
+      expect(text).toContain('**delegateQueue**: An operation queue for scheduling callbacks.');
+      // Empty parameters must not leave a dangling "**name**: ".
+      expect(text).toContain('**emptyParameter**');
+      expect(text).not.toContain('**emptyParameter**:');
+      expect(text).not.toContain('**delegateQueue**: \n');
+    });
+
+    it('renders inline images, image variants, captions and media blocks', async () => {
+      const mediaDoc = {
+        metadata: { roleHeading: 'Article', title: 'Media' },
+        primaryContentSections: [
+          {
+            kind: 'content',
+            content: [
+              // Image stored as the only inline run of a paragraph.
+              {
+                type: 'paragraph',
+                inlineContent: [{ type: 'image', identifier: 'inline-image' }],
+              },
+              // Layout spacer image mixed into text must not leak into the output.
+              {
+                type: 'paragraph',
+                inlineContent: [
+                  { type: 'text', text: 'Before ' },
+                  { type: 'image', identifier: 'spacer' },
+                  { type: 'text', text: ' after.' },
+                ],
+              },
+              // Caption from metadata.abstract wins over the long reference alt.
+              {
+                type: 'paragraph',
+                inlineContent: [
+                  {
+                    type: 'image',
+                    identifier: 'caption-image',
+                    metadata: { abstract: [{ type: 'text', text: 'Idle' }] },
+                  },
+                ],
+              },
+              // Block-level image resolved through its reference.
+              { type: 'image', identifier: 'block-image' },
+              // Block whose variants live on the block itself, not a reference.
+              {
+                type: 'image',
+                alt: 'Direct variant',
+                variants: [{ traits: ['1x', 'light'], url: '/images/direct.png' }],
+              },
+              // Older payloads key the reference by the asset name.
+              { type: 'image', name: 'named-image' },
+              // HIG-style side-by-side row of images.
+              {
+                type: 'row',
+                numberOfColumns: 2,
+                columns: [
+                  {
+                    content: [
+                      {
+                        type: 'paragraph',
+                        inlineContent: [{ type: 'image', identifier: 'state-idle' }],
+                      },
+                    ],
+                  },
+                  {
+                    content: [
+                      {
+                        type: 'paragraph',
+                        inlineContent: [{ type: 'image', identifier: 'state-hover' }],
+                      },
+                    ],
+                  },
+                ],
+              },
+              { type: 'video', identifier: 'clip.mp4' },
+            ],
+          },
+        ],
+        references: {
+          'inline-image': {
+            type: 'image',
+            alt: 'Inline alt',
+            variants: [{ traits: ['2x', 'light'], url: '/images/inline.png' }],
+          },
+          spacer: {
+            type: 'image',
+            alt: null,
+            variants: [{ traits: ['1x', 'light'], url: '/images/spacer.png' }],
+          },
+          'caption-image': {
+            type: 'image',
+            alt: 'A long accessibility description',
+            variants: [{ traits: ['1x', 'light'], url: '/images/caption.png' }],
+          },
+          'block-image': {
+            type: 'image',
+            alt: 'Block alt',
+            variants: [{ traits: ['2x', 'light'], url: '/images/block@2x.png' }],
+          },
+          'named-image': {
+            type: 'image',
+            alt: 'Named alt',
+            variants: [{ traits: ['1x', 'light'], url: '/images/named.png' }],
+          },
+          'state-idle': {
+            type: 'image',
+            alt: 'State idle',
+            variants: [{ traits: ['1x', 'light'], url: '/images/state-idle.png' }],
+          },
+          'state-hover': {
+            type: 'image',
+            alt: 'State hover',
+            variants: [{ traits: ['1x', 'light'], url: '/images/state-hover.png' }],
+          },
+          'clip.mp4': {
+            type: 'video',
+            alt: 'An animation showing a tooltip.',
+            variants: [{ traits: ['1x', 'light'], url: '/videos/com.apple.HIG/clip.mp4' }],
+          },
+        },
+      };
+
+      (apiCache.get as jest.Mock).mockReturnValue(null);
+      (httpClient.getJson as jest.Mock).mockResolvedValue(mediaDoc);
+
+      const result = await fetchAppleDocJson(mockDocUrl);
+      const text = result.content[0].text;
+
+      expect(text).toContain('![Inline alt](https://developer.apple.com/images/inline.png)');
+      expect(text).toMatch(/Before\s+after\./);
+      expect(text).not.toContain('spacer.png');
+      expect(text).toContain('![Idle](https://developer.apple.com/images/caption.png)');
+      expect(text).toContain('![Block alt](https://developer.apple.com/images/block@2x.png)');
+      expect(text).toContain('![Direct variant](https://developer.apple.com/images/direct.png)');
+      expect(text).toContain('![Named alt](https://developer.apple.com/images/named.png)');
+      expect(text).toContain('![State idle](https://developer.apple.com/images/state-idle.png)');
+      expect(text).toContain('![State hover](https://developer.apple.com/images/state-hover.png)');
+      expect(text).toContain(
+        '[An animation showing a tooltip.](https://developer.apple.com/videos/com.apple.HIG/clip.mp4)',
+      );
     });
 
     it('marks deprecated pages and prints the deprecation summary', async () => {

@@ -166,7 +166,11 @@ describe('get-documentation-updates', () => {
   });
 
   it('should filter by technology', async () => {
-    const result = await handleGetDocumentationUpdates('all', 'SwiftUI');
+    // `auto` treats technology as a timeline request; this test pins the
+    // legacy index behavior, so select it explicitly.
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, undefined, true, 50, 'index',
+    );
 
     expect(result).toContain('SwiftUI updates');
     expect(result).not.toContain('UIKit updates');
@@ -372,5 +376,378 @@ describe('get-documentation-updates — Past releases classification', () => {
     expect(result).toContain('WWDC24');
     expect(result).not.toContain('SwiftUI updates');
     expect(result).toContain('2024');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Timeline mode (detail="timeline" / auto with technology)
+// ---------------------------------------------------------------------------
+
+describe('get-documentation-updates — dated timeline', () => {
+  const timelineIndex = {
+    interfaceLanguages: {
+      swift: [
+        {
+          path: '/documentation/updates',
+          title: 'Updates',
+          type: 'module',
+          children: [
+            { title: 'Technology and frameworks', type: 'groupMarker' },
+            { path: '/documentation/updates/swiftui', title: 'SwiftUI updates', type: 'article' },
+            { path: '/documentation/updates/uikit', title: 'UIKit updates', type: 'article' },
+            { path: '/documentation/updates/app-intents', title: 'App Intents updates', type: 'article' },
+          ],
+        },
+      ],
+    },
+    references: {
+      'doc://com.apple.Updates/documentation/updates/swiftui': {
+        title: 'SwiftUI updates',
+        url: '/documentation/updates/swiftui',
+      },
+    },
+  };
+
+  function paragraph(text: string, identifiers: string[] = []) {
+    return {
+      type: 'paragraph',
+      inlineContent: [
+        { type: 'text', text },
+        ...identifiers.flatMap(identifier => [
+          { type: 'reference', identifier, isActive: true },
+          { type: 'text', text: '.' },
+        ]),
+      ],
+    };
+  }
+
+  const timelineReferences = {
+    'doc://com.apple.SwiftUI/documentation/SwiftUI': {
+      title: 'SwiftUI', url: '/documentation/swiftui',
+    },
+    'doc://com.apple.SwiftUI/documentation/SwiftUI/ArrangementView': {
+      title: 'ArrangementView', url: '/documentation/swiftui/arrangementview',
+    },
+    'doc://com.apple.SwiftUI/documentation/SwiftUI/ReservedRegion': {
+      title: 'ReservedRegion', url: '/documentation/swiftui/reservedregion',
+    },
+  };
+
+  const timelineDocument = {
+    metadata: { title: 'SwiftUI updates' },
+    abstract: [{ type: 'text', text: 'Learn about important changes to SwiftUI.' }],
+    primaryContentSections: [
+      {
+        kind: 'content',
+        content: [
+          { type: 'heading', level: 2, text: 'Overview' },
+          { type: 'paragraph', inlineContent: [{ type: 'text', text: 'Browse notable changes in SwiftUI.' }] },
+          { type: 'heading', level: 2, text: 'September 2026' },
+          { type: 'heading', level: 3, text: 'Arrangement views' },
+          {
+            type: 'unorderedList',
+            items: [
+              { content: [paragraph('Arrange content with ', ['doc://com.apple.SwiftUI/documentation/SwiftUI/ArrangementView'])] },
+              { content: [{ type: 'paragraph', inlineContent: [
+                { type: 'text', text: 'Configure the style with ' },
+                { type: 'codeVoice', code: 'arrangementViewStyle' },
+                { type: 'text', text: '.' },
+              ] }] },
+            ],
+          },
+          { type: 'heading', level: 3, text: 'Reserved regions' },
+          {
+            type: 'unorderedList',
+            items: [{ content: [paragraph('Avoid reserved regions with ', ['doc://com.apple.SwiftUI/documentation/SwiftUI/ReservedRegion'])] }],
+          },
+          { type: 'heading', level: 2, text: 'June 2025' },
+          { type: 'heading', level: 3, text: 'Text' },
+          {
+            type: 'unorderedList',
+            items: [{ content: [paragraph('New text features for widgets.')] }],
+          },
+          { type: 'heading', level: 2, text: 'June 2023, visionOS' },
+          {
+            type: 'paragraph',
+            inlineContent: [{ type: 'text', text: 'Scenes work in immersive spaces.' }],
+          },
+        ],
+      },
+    ],
+    references: timelineReferences,
+  };
+
+  /** URL-aware getJson mock covering index, legacy Updates.json and the timeline doc. */
+  function mockTimeline(doc: unknown = timelineDocument, index: unknown = timelineIndex) {
+    (httpClient.getJson as jest.Mock).mockImplementation((url: unknown) => {
+      const urlStr = url as string;
+      if (urlStr.includes('documentation/updates/swiftui.json')) {
+        return Promise.resolve(doc);
+      }
+      if (urlStr.includes('index/updates')) {
+        return Promise.resolve(index);
+      }
+      if (urlStr.includes('Updates.json')) {
+        return Promise.resolve(legacyUpdatesData);
+      }
+      throw new Error(`Unknown URL: ${urlStr}`);
+    });
+  }
+
+  const legacyUpdatesData = {
+    topicSections: [
+      {
+        title: 'Technology updates',
+        identifiers: ['doc://com.apple.Updates/documentation/Updates/SwiftUI'],
+        anchor: 'Technology-updates',
+      },
+    ],
+    references: {
+      'doc://com.apple.Updates/documentation/Updates/SwiftUI': {
+        type: 'topic', title: 'SwiftUI updates', url: '/documentation/updates/swiftui',
+        abstract: [{ text: 'Learn about important changes to SwiftUI.', type: 'text' }],
+        kind: 'article', role: 'article',
+      },
+    },
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (updatesCache.get as jest.Mock).mockReturnValue(null);
+    mockTimeline();
+  });
+
+  it('renders dated sections with markdown links and a change count', async () => {
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, undefined, true, 50, 'timeline',
+    );
+
+    expect(result).toContain('# SwiftUI Documentation Updates');
+    expect(result).toContain('Learn about important changes to SwiftUI.');
+    expect(result).toContain('Showing 5 of 5 changes · sections: 3');
+    expect(result).toContain('## September 2026');
+    expect(result).toContain('### Arrangement views');
+    expect(result).toContain('- Arrange content with [ArrangementView](https://developer.apple.com/documentation/swiftui/arrangementview).');
+    expect(result).toContain('- Configure the style with `arrangementViewStyle`.');
+    expect(result).toContain('## June 2025');
+    expect(result).toContain('## June 2023, visionOS');
+    expect(result).toContain('- Scenes work in immersive spaces.');
+    // The Overview preamble must not leak in as an entry.
+    expect(result).not.toContain('- Browse notable changes');
+  });
+
+  it('auto routes to the timeline when a technology is given', async () => {
+    const result = await handleGetDocumentationUpdates('all', 'SwiftUI');
+
+    expect(result).toContain('## September 2026');
+    expect(httpClient.getJson).toHaveBeenCalledWith(
+      'https://developer.apple.com/tutorials/data/documentation/updates/swiftui.json',
+    );
+  });
+
+  it('auto without technology keeps the legacy index output', async () => {
+    const result = await handleGetDocumentationUpdates('all');
+
+    expect(result).toContain('Apple Developer Documentation Updates');
+    expect(result).not.toContain('Showing ');
+    expect(httpClient.getJson).toHaveBeenCalledWith(
+      'https://developer.apple.com/tutorials/data/documentation/Updates.json',
+    );
+  });
+
+  it('detail="index" wins over a technology and keeps the legacy index', async () => {
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, undefined, true, 50, 'index',
+    );
+
+    expect(result).toContain('Apple Developer Documentation Updates');
+    expect(httpClient.getJson).toHaveBeenCalledWith(
+      'https://developer.apple.com/tutorials/data/documentation/Updates.json',
+    );
+  });
+
+  it('matches technology names case-, space- and hyphen-insensitively', async () => {
+    mockTimeline();
+    const result = await handleGetDocumentationUpdates(
+      'all', '  swift-UI ', undefined, undefined, true, 50, 'timeline',
+    );
+
+    expect(result).toContain('# SwiftUI Documentation Updates');
+  });
+
+  it('resolves pages exposed only through the index references map', async () => {
+    mockTimeline(timelineDocument, {
+      interfaceLanguages: { swift: [] },
+      references: {
+        'doc://com.apple.Updates/documentation/updates/swiftui': {
+          title: 'SwiftUI updates',
+          url: '/documentation/updates/swiftui',
+        },
+      },
+    });
+
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, undefined, true, 50, 'timeline',
+    );
+
+    expect(result).toContain('## September 2026');
+  });
+
+  it('reports unknown technologies with valid examples', async () => {
+    const result = await handleGetDocumentationUpdates(
+      'all', 'NotARealFramework', undefined, undefined, true, 50, 'timeline',
+    );
+
+    expect(result.startsWith('Error:')).toBe(true);
+    expect(result).toContain('Unknown technology "NotARealFramework"');
+    expect(result).toContain('SwiftUI updates');
+    expect(result).toContain('App Intents updates');
+  });
+
+  it('errors when detail="timeline" is used without a technology', async () => {
+    const result = await handleGetDocumentationUpdates(
+      'all', undefined, undefined, undefined, true, 50, 'timeline',
+    );
+
+    expect(result.startsWith('Error:')).toBe(true);
+    expect(result).toContain('requires a technology');
+  });
+
+  it('applies limit to change entries across sections', async () => {
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, undefined, true, 2, 'timeline',
+    );
+
+    expect(result).toContain('Showing 2 of 5 changes');
+    expect(result).toContain('## September 2026');
+    expect(result).not.toContain('## June 2025');
+  });
+
+  it('filters sections by year', async () => {
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', '2025', undefined, true, 50, 'timeline',
+    );
+
+    expect(result).toContain('## June 2025');
+    expect(result).not.toContain('September 2026');
+    expect(result).toContain('Showing 1 of 1 changes · sections: 1');
+  });
+
+  it('filters entries by searchQuery', async () => {
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, 'widgets', true, 50, 'timeline',
+    );
+
+    expect(result).toContain('## June 2025');
+    expect(result).not.toContain('September 2026');
+    expect(result).toContain('Showing 1 of 1 changes');
+  });
+
+  it('truncates long change text to ~400 characters', async () => {
+    const longText = 'x'.repeat(1200);
+    mockTimeline({
+      ...timelineDocument,
+      primaryContentSections: [{
+        kind: 'content',
+        content: [
+          { type: 'heading', level: 2, text: 'September 2026' },
+          { type: 'paragraph', inlineContent: [{ type: 'text', text: longText }] },
+        ],
+      }],
+    });
+
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, undefined, true, 50, 'timeline',
+    );
+
+    const entry = result.split('\n').find(line => line.startsWith('- ')) ?? '';
+    expect(entry.endsWith('…')).toBe(true);
+    expect(entry.length).toBeLessThanOrEqual(402);
+  });
+
+  it('caps the whole output at ~14K characters and says so', async () => {
+    const manyEntries = Array.from({ length: 200 }, (_, index) => ({
+      type: 'unorderedList',
+      items: [{ content: [{
+        type: 'paragraph',
+        inlineContent: [{ type: 'text', text: `Change ${index} ${'y'.repeat(300)}` }],
+      }] }],
+    }));
+    mockTimeline({
+      metadata: { title: 'SwiftUI updates' },
+      abstract: [{ type: 'text', text: 'Learn about important changes to SwiftUI.' }],
+      primaryContentSections: [{
+        kind: 'content',
+        content: [
+          { type: 'heading', level: 2, text: 'September 2026' },
+          ...manyEntries,
+        ],
+      }],
+    });
+
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, undefined, true, 200, 'timeline',
+    );
+
+    expect(result.length).toBeLessThanOrEqual(14000);
+    expect(result).toContain('output truncated');
+  });
+
+  it('caches the timeline keyed by detail/slug/filters', async () => {
+    (updatesCache.get as jest.Mock).mockReturnValue('# Cached Timeline');
+
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', '2025', 'text', true, 30, 'timeline',
+    );
+
+    expect(result).toBe('# Cached Timeline');
+    const cacheKey = (updatesCache.get as jest.Mock).mock.calls[0][0] as string;
+    expect(cacheKey).toContain('documentation-updates-timeline');
+    expect(cacheKey).toContain('swiftui');
+    expect(cacheKey).toContain('2025');
+    expect(cacheKey).toContain('text');
+    expect(updatesCache.set).not.toHaveBeenCalled();
+    // Only the index was needed to resolve the slug; the doc was never fetched.
+    expect(httpClient.getJson).not.toHaveBeenCalledWith(
+      expect.stringContaining('documentation/updates/swiftui.json'),
+    );
+  });
+
+  it('stores timeline results under a slug-scoped cache key', async () => {
+    await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, 'widgets', true, 30, 'timeline',
+    );
+
+    expect(updatesCache.set).toHaveBeenCalled();
+    const [cacheKey, cachedValue] = (updatesCache.set as jest.Mock).mock.calls[0];
+    expect(cacheKey).toContain('documentation-updates-timeline');
+    expect(cacheKey).toContain('swiftui');
+    expect(cacheKey).toContain('widgets');
+    expect(cachedValue).toContain('## June 2025');
+  });
+
+  it('returns a no-match message when filters exclude everything', async () => {
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', '1999', undefined, true, 50, 'timeline',
+    );
+
+    expect(result).toContain('No dated updates found for SwiftUI updates in 1999');
+  });
+
+  it('surfaces fetch failures as an Error string', async () => {
+    (httpClient.getJson as jest.Mock).mockImplementation((url: unknown) => {
+      const urlStr = url as string;
+      if (urlStr.includes('index/updates')) {
+        return Promise.resolve(timelineIndex);
+      }
+      return Promise.reject(new Error('Network error'));
+    });
+
+    const result = await handleGetDocumentationUpdates(
+      'all', 'SwiftUI', undefined, undefined, true, 50, 'timeline',
+    );
+
+    expect(result.startsWith('Error: Failed to fetch documentation updates')).toBe(true);
+    expect(result).toContain('Network error');
   });
 });

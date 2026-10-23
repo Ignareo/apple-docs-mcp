@@ -84,7 +84,7 @@ describe('Tool Handlers', () => {
       const args = { query: 'SwiftUI' };
       const result = await handleToolCall('search_apple_docs', args, mockServer);
 
-      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 10, '');
+      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 10, '', 'en-US');
       expect(result).toEqual({
         content: [{ type: 'text', text: 'Search results' }],
       });
@@ -94,7 +94,7 @@ describe('Tool Handlers', () => {
       const args = { query: 'SwiftUI', limit: 5, search_scope: 'documentation' };
       const result = await handleToolCall('search_apple_docs', args, mockServer);
 
-      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 5, 'documentation');
+      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 5, 'documentation', 'en-US');
       expect(result).toEqual({
         content: [{ type: 'text', text: 'Search results' }],
       });
@@ -242,6 +242,7 @@ describe('Tool Handlers', () => {
         'animation',
         true,
         50,
+        'auto',
       );
     });
   });

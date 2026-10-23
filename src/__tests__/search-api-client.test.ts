@@ -35,6 +35,7 @@ import {
   SEARCH_SCOPES,
 } from '../tools/search-api-client.js';
 import { formatSearchResults, searchAppleDocs, searchAppleDocsTool } from '../tools/search-parser.js';
+import { searchAppleDocsSchema } from '../schemas/search.schema.js';
 import { UserAgentPool } from '../utils/user-agent-pool.js';
 import type {
   AppleSearchMetadata,
@@ -666,5 +667,56 @@ describe('partial results on a stalled stream', () => {
     await searchAppleDocsApiDetailed('stall-once');
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. locale plumbing (targetResultLocale)
+// ---------------------------------------------------------------------------
+
+describe('search locale (targetResultLocale)', () => {
+  function requestBody(call: unknown[]): Record<string, unknown> {
+    return JSON.parse((call[1] as RequestInit).body as string) as Record<string, unknown>;
+  }
+
+  it('sends en-US by default', async () => {
+    mockFetch.mockResolvedValue(jsonlResponse(pureAppendStream()));
+
+    await searchAppleDocsApi('UIButton configuration');
+
+    expect(requestBody(mockFetch.mock.calls[0] as unknown[]).targetResultLocale).toBe('en-US');
+  });
+
+  it('passes an explicit locale through to Apple', async () => {
+    mockFetch.mockResolvedValue(jsonlResponse(pureAppendStream()));
+
+    await searchAppleDocsApi('WWDC 2024', 10, '', 'zh-CN');
+
+    expect(requestBody(mockFetch.mock.calls[0] as unknown[]).targetResultLocale).toBe('zh-CN');
+  });
+
+  it('does not share cache entries between locales', async () => {
+    mockFetch.mockResolvedValue(jsonlResponse(pureAppendStream()));
+
+    await searchAppleDocsApi('WWDC 2024', 10, '', 'en-US');
+    await searchAppleDocsApi('WWDC 2024', 10, '', 'zh-CN');
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(requestBody(mockFetch.mock.calls[1] as unknown[]).targetResultLocale).toBe('zh-CN');
+  });
+
+  it('searchAppleDocsTool forwards locale', async () => {
+    mockFetch.mockResolvedValue(jsonlResponse(pureAppendStream()));
+
+    const result = await searchAppleDocsTool({ query: 'WWDC 2024', locale: 'ja-JP' });
+
+    expect(result.isError).toBeUndefined();
+    expect(requestBody(mockFetch.mock.calls[0] as unknown[]).targetResultLocale).toBe('ja-JP');
+  });
+
+  it('only accepts the four localized locale values in the schema', () => {
+    expect(searchAppleDocsSchema.parse({ query: 'x' }).locale).toBe('en-US');
+    expect(searchAppleDocsSchema.parse({ query: 'x', locale: 'ko-KR' }).locale).toBe('ko-KR');
+    expect(() => searchAppleDocsSchema.parse({ query: 'x', locale: 'de-DE' })).toThrow();
   });
 });

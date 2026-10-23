@@ -163,7 +163,12 @@ export default class AppleDeveloperDocsMCPServer {
     });
   }
 
-  public async searchAppleDocs(query: string, limit: number = 10, searchScope: string = '') {
+  public async searchAppleDocs(
+    query: string,
+    limit: number = 10,
+    searchScope: string = '',
+    locale: string = 'en-US',
+  ) {
     // 输入验证
     const queryValidation = validateInput(query, 'Search query');
     if (queryValidation) {
@@ -173,7 +178,7 @@ export default class AppleDeveloperDocsMCPServer {
     logger.info(`Searching Apple docs for: ${query}`);
 
     // search-parser 内部已包含显式错误处理（isError），直接透传其结果
-    return runSearchAppleDocs(query, limit, searchScope);
+    return runSearchAppleDocs(query, limit, searchScope, locale);
   }
 
   public async getAppleDocContent(
@@ -277,9 +282,10 @@ export default class AppleDeveloperDocsMCPServer {
     searchQuery?: string,
     includeBeta: boolean = true,
     limit: number = API_LIMITS.DEFAULT_DOCUMENTATION_UPDATES_LIMIT,
+    detail: 'auto' | 'index' | 'timeline' = 'auto',
   ) {
     return this.handleAsyncOperation(
-      () => handleGetDocumentationUpdates(category, technology, year, searchQuery, includeBeta, limit),
+      () => handleGetDocumentationUpdates(category, technology, year, searchQuery, includeBeta, limit, detail),
       'getDocumentationUpdates',
     );
   }

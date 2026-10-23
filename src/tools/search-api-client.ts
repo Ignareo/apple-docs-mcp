@@ -126,9 +126,19 @@ export function resolveSearchScope(searchScope?: string): unknown {
 export const SEARCH_API_MAX_RETRIES = REQUEST_CONFIG.MAX_RETRIES;
 export const SEARCH_API_RETRY_DELAY_MS = REQUEST_CONFIG.RETRY_DELAY;
 
-/** Cache key for a search query (the 10-minute TTL comes from `searchCache`). */
-function searchCacheKey(query: string, searchScope: string): string {
-  return `search:${searchScope}:${query.trim().toLowerCase()}`;
+/**
+ * Default result-title locale. Apple silently falls back to en-US for
+ * unsupported values, so this is a plain string rather than an enum.
+ */
+export const SEARCH_API_DEFAULT_LOCALE = 'en-US';
+
+/**
+ * Cache key for a search query (the 10-minute TTL comes from `searchCache`).
+ * The locale is part of the key: the same query returns localized WWDC titles
+ * for zh-CN/ja-JP/ko-KR, so mixing them would poison the cache.
+ */
+function searchCacheKey(query: string, searchScope: string, locale: string): string {
+  return `search:${locale}:${searchScope}:${query.trim().toLowerCase()}`;
 }
 
 /** Drop cached search results (used by tests and diagnostics). */
@@ -194,10 +204,14 @@ async function pickUserAgent(): Promise<string> {
 }
 
 /** Build the request body for a query. */
-function buildQueryBody(query: string, searchScope: unknown): Record<string, unknown> {
+function buildQueryBody(
+  query: string,
+  searchScope: unknown,
+  locale: string = SEARCH_API_DEFAULT_LOCALE,
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     text: query,
-    targetResultLocale: 'en-US',
+    targetResultLocale: locale,
     includedResponses: ['quickSearch', 'search'],
   };
   if (searchScope) {
@@ -216,8 +230,12 @@ function buildQueryBody(query: string, searchScope: unknown): Record<string, unk
  * Kept as the non-streaming fallback (and for direct callers/tests). The
  * product path uses {@link streamQuery} so partial results survive a stall.
  */
-export async function postQuery(query: string, searchScope: string = ''): Promise<string> {
-  const body = buildQueryBody(query, resolveSearchScope(searchScope));
+export async function postQuery(
+  query: string,
+  searchScope: string = '',
+  locale: string = SEARCH_API_DEFAULT_LOCALE,
+): Promise<string> {
+  const body = buildQueryBody(query, resolveSearchScope(searchScope), locale);
 
   const maxRetries = envNumber('SEARCH_API_MAX_RETRIES', SEARCH_API_MAX_RETRIES);
   const retryDelayMs = envNumber('SEARCH_API_RETRY_DELAY_MS', SEARCH_API_RETRY_DELAY_MS);
@@ -319,6 +337,7 @@ async function streamAttempt(
   query: string,
   searchScope: unknown,
   userAgent: string,
+  locale: string = SEARCH_API_DEFAULT_LOCALE,
 ): Promise<SearchStreamOutcome> {
   const controller = new AbortController();
   let abortReason: SearchStreamAbortReason = null;
@@ -348,7 +367,7 @@ async function streamAttempt(
         ...SEARCH_API_HEADERS,
         'User-Agent': userAgent,
       },
-      body: JSON.stringify(buildQueryBody(query, searchScope)),
+      body: JSON.stringify(buildQueryBody(query, searchScope, locale)),
       signal: controller.signal,
     });
 
@@ -417,7 +436,11 @@ async function streamAttempt(
  * Timeouts and idle stalls are *not* retried: they already consumed the
  * budget and partial data is returned instead.
  */
-async function streamQuery(query: string, searchScope: string): Promise<SearchStreamOutcome> {
+async function streamQuery(
+  query: string,
+  searchScope: string,
+  locale: string = SEARCH_API_DEFAULT_LOCALE,
+): Promise<SearchStreamOutcome> {
   const scope = resolveSearchScope(searchScope);
   const maxRetries = envNumber('SEARCH_API_MAX_RETRIES', SEARCH_API_MAX_RETRIES);
   const retryDelayMs = envNumber('SEARCH_API_RETRY_DELAY_MS', SEARCH_API_RETRY_DELAY_MS);
@@ -426,7 +449,7 @@ async function streamQuery(query: string, searchScope: string): Promise<SearchSt
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const userAgent = await pickUserAgent();
     try {
-      const outcome = await streamAttempt(query, scope, userAgent);
+      const outcome = await streamAttempt(query, scope, userAgent, locale);
       await getSearchUaPool().markSuccess(userAgent);
       return outcome;
     } catch (error) {
@@ -687,8 +710,9 @@ export async function searchAppleDocsApiDetailed(
   query: string,
   limit: number = 10,
   searchScope: string = '',
+  locale: string = SEARCH_API_DEFAULT_LOCALE,
 ): Promise<AppleSearchResultSet> {
-  const cacheKey = searchCacheKey(query, searchScope);
+  const cacheKey = searchCacheKey(query, searchScope, locale);
   const cached = searchCache.get<AppleSearchApiResult[]>(cacheKey);
   if (cached) {
     return {
@@ -698,7 +722,7 @@ export async function searchAppleDocsApiDetailed(
     };
   }
 
-  const outcome = await streamQuery(query, searchScope);
+  const outcome = await streamQuery(query, searchScope, locale);
   const { quick, searchBuf, validEvents, recognizedEvents } = collectEvents(outcome.lines);
   const partial = outcome.abortReason !== null;
 
@@ -742,7 +766,8 @@ export async function searchAppleDocsApi(
   query: string,
   limit: number = 10,
   searchScope: string = '',
+  locale: string = SEARCH_API_DEFAULT_LOCALE,
 ): Promise<AppleSearchApiResult[]> {
-  const { results } = await searchAppleDocsApiDetailed(query, limit, searchScope);
+  const { results } = await searchAppleDocsApiDetailed(query, limit, searchScope, locale);
   return results;
 }

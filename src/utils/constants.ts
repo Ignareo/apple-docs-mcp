@@ -196,6 +196,16 @@ export const REQUEST_CONFIG = {
   DEFAULT_SAFARI_USER_AGENT: SAFARI_USER_AGENTS[19], // macOS 15.1, Safari 18.1, Apple Silicon
 } as const;
 
+// Timeout for framework index downloads (milliseconds).
+//
+// Framework index files can be several megabytes and Apple's backend regularly
+// needs more than the default REQUEST_CONFIG.TIMEOUT (30s). Override with
+// APPLE_DOCS_FRAMEWORK_INDEX_TIMEOUT_MS if needed.
+export const FRAMEWORK_INDEX_TIMEOUT = (() => {
+  const raw = Number.parseInt(process.env.APPLE_DOCS_FRAMEWORK_INDEX_TIMEOUT_MS ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60000; // 60 seconds
+})();
+
 // Rate Limiting Configuration
 export const RATE_LIMIT = {
   MAX_REQUESTS_PER_MINUTE: 100,

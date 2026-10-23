@@ -38,7 +38,9 @@
     "prepublishOnly": "pnpm run clean && pnpm run build && pnpm run test:ci",
     "release:patch": "npm version patch && git push origin main --tags && npm publish",
     "release:minor": "npm version minor && git push origin main --tags && npm publish",
-    "release:major": "npm version major && git push origin main --tags && npm publish"
+    "release:major": "npm version major && git push origin main --tags && npm publish",
+    "wwdc:audit": "node scripts/refresh-wwdc-catalog.mjs",
+    "wwdc:refresh": "node scripts/refresh-wwdc-catalog.mjs --write-catalog"
   },
   "keywords": [
     "mcp",

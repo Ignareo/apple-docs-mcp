@@ -236,8 +236,16 @@ interface RenderableReference {
   title?: unknown;
   alt?: unknown;
   url?: unknown;
-  variants?: Array<{ url?: unknown }>;
+  variants?: unknown;
+  metadata?: unknown;
 }
+
+/**
+ * tabNavigator output budget: Apple pages can nest many tabs and very large
+ * tab bodies, so cap both the number of tabs and each tab's rendered content.
+ */
+export const TAB_NAVIGATOR_MAX_TABS = 4;
+export const TAB_NAVIGATOR_MAX_CONTENT_CHARS = 2500;
 
 type DeprecatableDoc = AppleDocJSON & {
   deprecationSummary?: unknown;
@@ -304,6 +312,8 @@ export function formatInlineContent(inlineContent: unknown, jsonData: AppleDocJS
           const identifier = toStringValue(inline.identifier);
           return identifier ? `\`${getReferenceTitle(jsonData, identifier)}\`` : '';
         }
+        case 'image':
+          return resolveImageMarkdown(inline, jsonData, false);
         default:
           return '';
       }
@@ -430,31 +440,174 @@ function formatAsideBlock(block: RenderableBlock, jsonData: AppleDocJSON): strin
 }
 
 /**
- * Render an image block as `![alt](url)`, omitting it when no URL is known.
+ * Find the reference entry an image/video block points at. Apple uses the
+ * asset identifier as the reference key; older payloads may only carry `name`.
+ * Some blocks also inline their own `variants`/`url`, so callers fall back to
+ * the block itself when no reference matches.
  */
-function formatImageBlock(block: RenderableBlock, jsonData: AppleDocJSON): string {
+function resolveMediaReference(
+  block: RenderableBlock,
+  jsonData: AppleDocJSON,
+): RenderableReference | undefined {
   const identifier = toStringValue(block.identifier) || toStringValue(block.name);
-  const reference = identifier
-    ? (jsonData.references?.[identifier] as unknown as RenderableReference | undefined)
-    : undefined;
+  if (identifier === '') {
+    return undefined;
+  }
+  return jsonData.references?.[identifier] as unknown as RenderableReference | undefined;
+}
 
-  const variantUrl = toArray(reference?.variants)
-    .map((variant) => toStringValue(toBlock(variant)?.url))
-    .find((url) => url !== '');
-  const rawUrl = toStringValue(reference?.url) || variantUrl || '';
+function firstVariantUrl(variants: unknown): string {
+  return (
+    toArray(variants)
+      .map((variant) => toStringValue(toBlock(variant)?.url))
+      .find((url) => url !== '') ?? ''
+  );
+}
+
+/**
+ * Resolve a media URL from the reference, the block itself, or any variant
+ * (`variants[].url` always carries `traits`, sometimes only `svgID`/`traits`).
+ */
+function resolveMediaUrl(
+  block: RenderableBlock,
+  reference: RenderableReference | undefined,
+): string {
+  const rawUrl =
+    toStringValue(reference?.url) ||
+    toStringValue(block.url) ||
+    firstVariantUrl(reference?.variants) ||
+    firstVariantUrl(block.variants) ||
+    '';
   if (rawUrl === '') {
     return '';
   }
+  if (rawUrl.startsWith('http')) {
+    return rawUrl;
+  }
+  return `https://developer.apple.com${rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`}`;
+}
 
-  const url = rawUrl.startsWith('http') ? rawUrl : `https://developer.apple.com${rawUrl}`;
+/** Flatten an inline-content array to plain text (used for image captions). */
+function inlinePlainText(value: unknown): string {
+  return toArray(value)
+    .map((raw) => {
+      const inline = toBlock(raw);
+      if (!inline) {
+        return '';
+      }
+      return toStringValue(inline.text) || toStringValue(inline.code);
+    })
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Resolve image alt text. Apple stores it on the reference most of the time,
+ * but HIG rows put the visible caption in `metadata.abstract` and inline
+ * images may carry their own `alt`.
+ */
+function resolveMediaAlt(
+  block: RenderableBlock,
+  reference: RenderableReference | undefined,
+): string {
   const metadata = toBlock(block.metadata);
-  const alt =
+  const referenceMetadata = toBlock(reference?.metadata);
+  return (
     toStringValue(block.alt) ||
+    inlinePlainText(metadata?.abstract) ||
+    inlinePlainText(referenceMetadata?.abstract) ||
     toStringValue(reference?.alt) ||
     toStringValue(metadata?.alt) ||
-    '';
+    ''
+  );
+}
 
-  return `![${alt}](${url})\n\n`;
+/**
+ * Render an image reference as inline markdown. `allowEmptyAlt` is used for
+ * standalone (paragraph-level) images so an image is never silently dropped
+ * just because Apple omitted both alt text and caption.
+ */
+function resolveImageMarkdown(
+  block: RenderableBlock,
+  jsonData: AppleDocJSON,
+  allowEmptyAlt: boolean,
+): string {
+  const reference = resolveMediaReference(block, jsonData);
+  const url = resolveMediaUrl(block, reference);
+  if (url === '') {
+    return '';
+  }
+  const alt = resolveMediaAlt(block, reference);
+  if (alt === '' && !allowEmptyAlt) {
+    return '';
+  }
+  return `![${alt}](${url})`;
+}
+
+/**
+ * Render an image block as `![alt](url)`, omitting it when no URL is known.
+ */
+function formatImageBlock(block: RenderableBlock, jsonData: AppleDocJSON): string {
+  const markdown = resolveImageMarkdown(block, jsonData, true);
+  return markdown === '' ? '' : `${markdown}\n\n`;
+}
+
+/**
+ * Render a video block as a link to Apple's hosted video.
+ */
+function formatVideoBlock(block: RenderableBlock, jsonData: AppleDocJSON): string {
+  const reference = resolveMediaReference(block, jsonData);
+  const url = resolveMediaUrl(block, reference);
+  if (url === '') {
+    return '';
+  }
+  const label = resolveMediaAlt(block, reference) || 'Video';
+  return `[${label}](${url})\n\n`;
+}
+
+/**
+ * Render a `row`/`columns` layout block by emitting each column's content in
+ * order. This is how HIG pages place side-by-side screenshots and captions.
+ */
+function formatColumnsBlock(block: RenderableBlock, jsonData: AppleDocJSON): string {
+  const columns = toArray(block.columns).length > 0 ? toArray(block.columns) : toArray(block.content);
+  const rendered = columns
+    .map((column) => formatContentBlocks(toBlock(column)?.content, jsonData).replace(/\s+$/, ''))
+    .filter((text) => text !== '');
+  if (rendered.length === 0) {
+    return '';
+  }
+  return `${rendered.join('\n\n')}\n\n`;
+}
+
+/**
+ * Render a `termList` (Apple's term/definition list) as a bullet list.
+ */
+function formatTermListBlock(block: RenderableBlock, jsonData: AppleDocJSON): string {
+  const lines: string[] = [];
+
+  toArray(block.items).forEach((rawItem) => {
+    const item = toBlock(rawItem);
+    if (!item) {
+      return;
+    }
+    const term = formatInlineContent(toBlock(item.term)?.inlineContent, jsonData).trim();
+    const definition = formatContentBlocks(toBlock(item.definition)?.content, jsonData)
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (term === '' && definition === '') {
+      return;
+    }
+    if (term === '') {
+      lines.push(`- ${definition}`);
+      return;
+    }
+    lines.push(definition === '' ? `- **${term}**` : `- **${term}**: ${definition}`);
+  });
+
+  return lines.length === 0 ? '' : `${lines.join('\n')}\n\n`;
 }
 
 /**
@@ -486,8 +639,51 @@ function formatLinksBlock(block: RenderableBlock): string {
 }
 
 /**
- * Render a tab navigator by emitting its first tab (labeled) to keep the
- * output deterministic; a page with no tabs renders nothing.
+ * Render blocks for a single tab, stopping before the rendered text exceeds
+ * `maxChars`. A block is never split, so code fences and tables stay valid.
+ */
+function formatContentBlocksWithinBudget(
+  blocks: unknown,
+  jsonData: AppleDocJSON,
+  maxChars: number,
+): { text: string; truncated: boolean } {
+  const rendered: string[] = [];
+  let length = 0;
+  let truncated = false;
+
+  for (const raw of toArray(blocks)) {
+    const text = formatContentBlock(raw, jsonData);
+    if (text === '') {
+      continue;
+    }
+    if (rendered.length > 0 && length + text.length > maxChars) {
+      truncated = true;
+      break;
+    }
+    rendered.push(text);
+    length += text.length;
+  }
+
+  let text = rendered.join('');
+  // A single block can exceed the budget on its own; hard-cap it at a
+  // character boundary and re-close any code fence the cut opened so the
+  // markdown stays valid.
+  if (text.length > maxChars) {
+    text = text.slice(0, maxChars);
+    if (((text.match(/```/g) ?? []).length) % 2 === 1) {
+      text += '\n```';
+    }
+    truncated = true;
+  }
+
+  return { text, truncated };
+}
+
+/**
+ * Render a tab navigator by emitting every tab (labeled) within a deterministic
+ * budget: at most TAB_NAVIGATOR_MAX_TABS tabs, each capped at
+ * TAB_NAVIGATOR_MAX_CONTENT_CHARS rendered characters. Omitted/truncated parts
+ * are called out explicitly so the output never silently loses content.
  */
 function formatTabNavigatorBlock(block: RenderableBlock, jsonData: AppleDocJSON): string {
   const tabs = toArray(block.tabs)
@@ -497,14 +693,31 @@ function formatTabNavigatorBlock(block: RenderableBlock, jsonData: AppleDocJSON)
     return '';
   }
 
-  const firstTab = tabs[0];
-  const label = toStringValue(firstTab.title).trim();
-  const inner = formatContentBlocks(firstTab.content, jsonData);
+  const renderedTabs = tabs.slice(0, TAB_NAVIGATOR_MAX_TABS);
+  const parts: string[] = [];
 
-  if (label === '') {
-    return inner;
+  renderedTabs.forEach((tab) => {
+    const label = toStringValue(tab.title).trim();
+    const { text, truncated } = formatContentBlocksWithinBudget(
+      tab.content,
+      jsonData,
+      TAB_NAVIGATOR_MAX_CONTENT_CHARS,
+    );
+    let section = label === '' ? text : `**${label}**\n\n${text}`;
+    if (truncated) {
+      section += `${section.endsWith('\n\n') || section === '' ? '' : '\n'}… (tab truncated)\n\n`;
+    }
+    if (section !== '') {
+      parts.push(section);
+    }
+  });
+
+  const omitted = tabs.length - renderedTabs.length;
+  if (omitted > 0) {
+    parts.push(`… ${omitted} more tab${omitted === 1 ? '' : 's'} omitted\n\n`);
   }
-  return `**${label}**\n\n${inner}`;
+
+  return parts.join('');
 }
 
 /**
@@ -526,6 +739,16 @@ function formatContentBlock(raw: unknown, jsonData: AppleDocJSON): string {
       return `${'#'.repeat(level)} ${text}\n\n`;
     }
     case 'paragraph': {
+      // Apple commonly stores an illustration as the only inlineContent run of
+      // an otherwise empty paragraph. Render it even without alt text.
+      const runs = toArray(block.inlineContent);
+      if (runs.length === 1) {
+        const soleRun = toBlock(runs[0]);
+        if (soleRun?.type === 'image') {
+          const markdown = resolveImageMarkdown(soleRun, jsonData, true);
+          return markdown === '' ? '' : `${markdown}\n\n`;
+        }
+      }
       const text = formatInlineContent(block.inlineContent, jsonData).trim();
       return text === '' ? '' : `${text}\n\n`;
     }
@@ -542,10 +765,17 @@ function formatContentBlock(raw: unknown, jsonData: AppleDocJSON): string {
       return formatListBlock(block, jsonData, true);
     case 'table':
       return formatTableBlock(block, jsonData);
+    case 'termList':
+      return formatTermListBlock(block, jsonData);
     case 'aside':
       return formatAsideBlock(block, jsonData);
     case 'image':
       return formatImageBlock(block, jsonData);
+    case 'video':
+      return formatVideoBlock(block, jsonData);
+    case 'row':
+    case 'columns':
+      return formatColumnsBlock(block, jsonData);
     case 'links':
       return formatLinksBlock(block);
     case 'tabNavigator':

@@ -11,7 +11,7 @@ import { searchFrameworkSymbolsTool } from './search-framework-symbols.js';
 export const toolDefinitions: Tool[] = [
   {
     name: 'search_apple_docs',
-    description: 'Search Apple Developer Documentation for APIs, frameworks, guides, samples and WWDC videos (backed by Apple\'s official search backend). Returns up to ~20 results with title, type, hierarchy, availability and URL; a stalled backend returns partial results with an explicit warning. For complete sample projects use get_sample_code; for full WWDC session content use the WWDC tools.',
+    description: 'Search Apple Developer Documentation for APIs, frameworks, guides, samples and WWDC videos (backed by Apple\'s official search backend). Returns up to ~20 results with title, type, hierarchy, availability and URL; a stalled backend returns partial results with an explicit warning. Set locale to localize WWDC/web-page titles. For complete sample projects use get_sample_code; for full WWDC session content use the WWDC tools.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -32,6 +32,12 @@ export const toolDefinitions: Tool[] = [
           enum: ['', 'documentation', 'video', 'sample_code', 'wwdc26'],
           default: '',
         },
+        locale: {
+          type: 'string',
+          description: 'Result-title locale. Only WWDC/web-page titles are localized; documentation content stays English. Default: "en-US".',
+          enum: ['en-US', 'zh-CN', 'ja-JP', 'ko-KR'],
+          default: 'en-US',
+        },
       },
       required: ['query'],
     },
@@ -42,7 +48,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'get_apple_doc_content',
-    description: 'Get detailed content from a specific Apple Developer Documentation page. Use this after search_apple_docs to get full documentation. Supports enhanced analysis options for comprehensive API understanding. Best for: reading API details, understanding usage, checking availability.',
+    description: 'Read a specific Apple Developer Documentation page (symbol, article or Human Interface Guidelines). Use after search_apple_docs. The page is rendered with code listings, tables, asides, lists and links; the optional include* flags add relationship/reference sections.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -52,19 +58,19 @@ export const toolDefinitions: Tool[] = [
         },
         includeRelatedApis: {
           type: 'boolean',
-          description: 'Include inheritance hierarchy and protocol conformances. Useful for understanding API relationships. Default: false',
+          description: 'Include the inheritance hierarchy and protocol conformances. Default: false',
         },
         includeReferences: {
           type: 'boolean',
-          description: 'Resolve and include all referenced types and APIs. Helps understand dependencies. Default: false',
+          description: 'Resolve and include referenced types and APIs. Default: false',
         },
         includeSimilarApis: {
           type: 'boolean',
-          description: 'Discover APIs with similar functionality. Great for finding alternatives. Default: false',
+          description: 'Include thematically similar APIs. Default: false',
         },
         includePlatformAnalysis: {
           type: 'boolean',
-          description: 'Analyze platform availability and version requirements. Essential for cross-platform development. Default: false',
+          description: 'Add a platform-availability analysis section. Default: false',
         },
       },
       required: ['url'],
@@ -108,7 +114,7 @@ export const toolDefinitions: Tool[] = [
   searchFrameworkSymbolsTool,
   {
     name: 'get_related_apis',
-    description: 'Analyze API relationships and discover related functionality. Shows inheritance, protocol conformances, and Apple\'s recommended alternatives. Essential for understanding how APIs work together. Use when: learning API hierarchy, finding protocol requirements, discovering related functionality.',
+    description: 'Analyze API relationships: inheritance, protocol conformances and Apple\'s recommended related APIs. Results are capped at 60; the output reports the true total and how many are shown.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -118,15 +124,15 @@ export const toolDefinitions: Tool[] = [
         },
         includeInherited: {
           type: 'boolean',
-          description: 'Show inherited methods/properties from superclasses. Helps understand full API surface. Default: true',
+          description: 'Include inherited members from superclasses. Default: true',
         },
         includeConformance: {
           type: 'boolean',
-          description: 'Show protocol conformances and requirements. Essential for protocol-oriented programming. Default: true',
+          description: 'Include protocol conformances and requirements. Default: true',
         },
         includeSeeAlso: {
           type: 'boolean',
-          description: 'Show Apple\'s recommended related APIs. Great for finding better alternatives or complementary APIs. Default: true',
+          description: 'Include Apple\'s recommended related APIs. Default: true',
         },
       },
       required: ['apiUrl'],
@@ -138,7 +144,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'resolve_references_batch',
-    description: 'Deep dive into all types and APIs referenced in a documentation page. Resolves all mentioned types, methods, and properties to understand dependencies. Use when: analyzing complex APIs, understanding type requirements, exploring API ecosystems.',
+    description: 'Resolve the types and APIs referenced on a documentation page (max 50) to see dependencies, requirements and related symbols.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -167,7 +173,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'get_platform_compatibility',
-    description: 'Check API availability across Apple platforms and OS versions. Shows minimum deployment targets, deprecations, and platform-specific features. Critical for cross-platform development. Use when: planning app requirements, checking API availability, finding platform alternatives.',
+    description: 'Check API availability across Apple platforms and OS versions: minimum deployment targets, beta status and deprecations, rendered as one table.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -182,7 +188,7 @@ export const toolDefinitions: Tool[] = [
         },
         includeRelated: {
           type: 'boolean',
-          description: 'Also check related APIs\' compatibility. Useful for finding platform-specific alternatives. Default: false',
+          description: 'Also check related APIs\' compatibility. Default: false',
         },
       },
       required: ['apiUrl'],
@@ -194,7 +200,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'find_similar_apis',
-    description: 'Discover alternative and related APIs. Finds APIs with similar functionality, modern replacements for deprecated APIs, and platform-specific alternatives. Perfect when looking for better ways to implement functionality.',
+    description: 'Find alternative APIs: modern replacements for deprecated APIs and thematically related symbols. Results are labelled by source (Apple recommends / topic membership), not by a fabricated similarity score.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -213,7 +219,7 @@ export const toolDefinitions: Tool[] = [
         },
         includeAlternatives: {
           type: 'boolean',
-          description: 'Include functionally similar APIs that might be better choices. Default: true',
+          description: 'Include functionally similar APIs. Default: true',
         },
       },
       required: ['apiUrl'],
@@ -225,7 +231,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'get_documentation_updates',
-    description: 'Track latest Apple platform updates, new APIs, and changes. Shows WWDC announcements, framework updates, and release notes. Essential for staying current with Apple development. For detailed WWDC videos, use WWDC-specific tools.',
+    description: 'List Apple documentation updates. With technology, detail="auto"/"timeline" returns a dated timeline of changes (e.g. "September 2026"); otherwise it returns the update index. For WWDC session content use the WWDC tools.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -236,11 +242,11 @@ export const toolDefinitions: Tool[] = [
         },
         technology: {
           type: 'string',
-          description: 'Filter by framework (case-sensitive). Examples: "SwiftUI", "UIKit", "ARKit". Get names from list_technologies.',
+          description: 'Technology/framework name (case-insensitive; spaces and hyphens normalized). Examples: "SwiftUI", "UIKit", "App Intents". In timeline mode this selects the update page.',
         },
         year: {
           type: 'string',
-          description: 'WWDC year filter ("2025", "2024", etc.). Only for wwdc category.',
+          description: 'Year filter: WWDC years in index mode, date-section years in timeline mode (e.g. "2026").',
         },
         searchQuery: {
           type: 'string',
@@ -252,7 +258,13 @@ export const toolDefinitions: Tool[] = [
         },
         limit: {
           type: 'number',
-          description: 'Max results (default: 50). Sorted by relevance and date.',
+          description: 'Max results (default: 50). For detail="timeline" this caps the number of dated change entries.',
+        },
+        detail: {
+          type: 'string',
+          description: 'Detail mode: "auto" (dated timeline when technology is given, else the index), "index" (legacy link directory) or "timeline" (dated changes for one technology). Default: "auto".',
+          enum: ['auto', 'index', 'timeline'],
+          default: 'auto',
         },
       },
       required: [],
@@ -264,7 +276,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'get_technology_overviews',
-    description: 'Access comprehensive guides and tutorials for Apple technologies. Includes getting started guides, architectural overviews, best practices, and implementation patterns. Perfect for learning new frameworks or understanding Apple\'s recommended approaches.',
+    description: 'Find guides and tutorials for Apple technologies: getting started, architecture overviews, best practices and implementation patterns.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -299,7 +311,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'get_sample_code',
-    description: 'Browse complete sample projects from Apple. Full working examples demonstrating best practices and implementation patterns. Different from search_apple_docs which returns code snippets. Use for learning by example.',
+    description: 'Browse complete sample projects from Apple (full working examples, unlike the snippets returned by search_apple_docs).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -360,7 +372,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'search_wwdc_content',
-    description: 'Full-text search across all WWDC video transcripts and code examples. Find specific discussions, API mentions, or implementation examples. More powerful than list_wwdc_videos for finding specific content. Snippets are budgeted (snippetChars) and the header reports total matches vs shown.',
+    description: 'Full-text search across WWDC transcripts and code examples; use it when you need specific discussions or API mentions rather than browsing. Snippets are budgeted (snippetChars) and the header reports total matches vs shown.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -449,7 +461,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'get_wwdc_code_examples',
-    description: 'Browse all code examples from WWDC sessions. Perfect for finding implementation patterns, seeing new API usage, or learning by example. Each result includes the code and its session context.',
+    description: 'Browse code examples from WWDC sessions. Each result includes the code (capped per example) and its session context.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -487,7 +499,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'browse_wwdc_topics',
-    description: 'List all WWDC topic categories with their IDs. Essential first step before using list_wwdc_videos with topic filtering. Returns topic IDs like "swiftui-ui-frameworks" that can be used in other tools.',
+    description: 'List WWDC topic categories and their IDs. The IDs (e.g. "swiftui-ui-frameworks") can be passed to list_wwdc_videos and get_wwdc_code_examples.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -517,7 +529,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'find_related_wwdc_videos',
-    description: 'Discover WWDC sessions related to a specific video. Finds prerequisite sessions, follow-up content, and thematically similar talks. Essential for creating learning paths.',
+    description: 'Find WWDC sessions related to a specific video: Apple-recommended prerequisites/follow-ups and same-topic sessions.',
     inputSchema: {
       type: 'object',
       properties: {

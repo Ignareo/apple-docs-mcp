@@ -1,5 +1,9 @@
 import { jest } from '@jest/globals';
-import { searchFrameworkSymbols } from '../../src/tools/search-framework-symbols.js';
+import {
+  searchFrameworkSymbols,
+  getFrameworkIndexUrl,
+  getFrameworkIndexCacheKey,
+} from '../../src/tools/search-framework-symbols.js';
 import { mockData, createTestFrameworkIndex } from '../helpers/test-helpers.js';
 
 // Mock dependencies
@@ -8,6 +12,19 @@ jest.mock('../../src/utils/http-client.js');
 
 import { indexCache } from '../../src/utils/cache.js';
 import { httpClient } from '../../src/utils/http-client.js';
+
+/** Create a stateful in-memory cache so cache-reuse tests are meaningful. */
+function useStatefulCache(): Map<string, unknown> {
+  const store = new Map<string, unknown>();
+
+  (indexCache.get as jest.Mock).mockImplementation((key: string) => store.get(key));
+  (indexCache.has as jest.Mock).mockImplementation((key: string) => store.has(key));
+  (indexCache.set as jest.Mock).mockImplementation((key: string, value: unknown) => {
+    store.set(key, value);
+  });
+
+  return store;
+}
 
 describe('searchFrameworkSymbols', () => {
   beforeEach(() => {
@@ -18,18 +35,19 @@ describe('searchFrameworkSymbols', () => {
     it('should search for classes in UIKit framework', async () => {
       // Mock cache miss
       (indexCache.get as jest.Mock).mockReturnValue(null);
-      
+
       // Mock HTTP response
       (httpClient.getJson as jest.Mock).mockResolvedValue(mockData.frameworkIndex);
 
       const result = await searchFrameworkSymbols('uikit', 'class', undefined, 'swift', 10);
 
       expect(httpClient.getJson).toHaveBeenCalledWith(
-        'https://developer.apple.com/tutorials/data/index/uikit'
+        'https://developer.apple.com/tutorials/data/index/uikit',
+        expect.objectContaining({ timeout: expect.any(Number) }),
       );
       expect(result).toContain('UIView');
       expect(result).toContain('UIViewController');
-      expect(result).toContain('Found:** 4 classes');
+      expect(result).toContain('Found:** 4 of 4 classes');
       expect(indexCache.set).toHaveBeenCalled();
     });
 
@@ -88,6 +106,8 @@ describe('searchFrameworkSymbols', () => {
       // Count occurrences of class links
       const classLinks = (result.match(/\[.*?\]/g) || []).length;
       expect(classLinks).toBe(5);
+      // Total count must reflect the full index, not just the returned slice.
+      expect(result).toContain('**Found:** 5 of 20 classes');
     });
 
     it('should support Objective-C language', async () => {
@@ -97,7 +117,114 @@ describe('searchFrameworkSymbols', () => {
       const result = await searchFrameworkSymbols('uikit', 'class', undefined, 'occ', 10);
 
       expect(result).toContain('UIView');
-      expect(result).toContain('Found:** 1 classes');
+      expect(result).toContain('Found:** 1 of 1 classes');
+    });
+  });
+
+  describe('raw index caching', () => {
+    it('should reuse the raw index JSON across different limit/symbolType queries', async () => {
+      const store = useStatefulCache();
+      (httpClient.getJson as jest.Mock).mockResolvedValue(mockData.frameworkIndex);
+
+      const first = await searchFrameworkSymbols('uikit', 'class', undefined, 'swift', 5);
+      const second = await searchFrameworkSymbols('uikit', 'all', undefined, 'swift', 50);
+
+      expect(first).toContain('**Found:** 4 of 4 classes');
+      expect(second).toContain('UIView');
+
+      // The index must be downloaded exactly once...
+      expect(httpClient.getJson).toHaveBeenCalledTimes(1);
+
+      // ...and cached under the same key the preloader checks.
+      const expectedRawKey = getFrameworkIndexCacheKey(
+        getFrameworkIndexUrl('uikit'),
+      );
+      expect(store.has(expectedRawKey)).toBe(true);
+      // The old, never-matching preload key must not be used.
+      expect(store.has('framework-index-uikit')).toBe(false);
+    });
+
+    it('should deduplicate concurrent raw index downloads', async () => {
+      useStatefulCache();
+      let resolveFetch: (value: typeof mockData.frameworkIndex) => void = () => {};
+      (httpClient.getJson as jest.Mock).mockImplementation(
+        () => new Promise(resolve => { resolveFetch = resolve; }),
+      );
+
+      const first = searchFrameworkSymbols('uikit', 'all', undefined, 'swift', 10);
+      const second = searchFrameworkSymbols('uikit', 'class', undefined, 'swift', 5);
+
+      expect(httpClient.getJson).toHaveBeenCalledTimes(1);
+
+      resolveFetch(mockData.frameworkIndex);
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+
+      expect(firstResult).toContain('UIView');
+      expect(secondResult).toContain('UIView');
+      expect(httpClient.getJson).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('linking and filtering', () => {
+    it('should never render an undefined link for path-less group markers', async () => {
+      const index = createTestFrameworkIndex([
+        {
+          title: 'Views',
+          type: 'groupMarker',
+          children: [
+            {
+              path: '/documentation/uikit/uiview',
+              title: 'UIView',
+              type: 'class',
+              children: [],
+            },
+          ],
+        },
+      ]);
+
+      (indexCache.get as jest.Mock).mockReturnValue(null);
+      (httpClient.getJson as jest.Mock).mockResolvedValue(index);
+
+      const result = await searchFrameworkSymbols('uikit', 'all', undefined, 'swift', 10);
+
+      expect(result).not.toContain('undefined');
+      expect(result).not.toContain('[**Views**]');
+      expect(result).toContain('[**UIView**](https://developer.apple.com/documentation/uikit/uiview)');
+      expect(result).toContain('**Found:** 1 of 1 symbols');
+    });
+
+    it('should render a plain title when a listable item has no path', async () => {
+      const index = createTestFrameworkIndex([
+        { title: 'MysterySymbol', type: 'class', path: undefined, children: [] },
+      ]);
+
+      (indexCache.get as jest.Mock).mockReturnValue(null);
+      (httpClient.getJson as jest.Mock).mockResolvedValue(index);
+
+      const result = await searchFrameworkSymbols('uikit', 'class', undefined, 'swift', 10);
+
+      expect(result).toContain('- **MysterySymbol**');
+      expect(result).not.toContain('undefined');
+    });
+
+    it('should skip items without a title', async () => {
+      const index = createTestFrameworkIndex([
+        { path: '/documentation/uikit/untitled', title: '   ', type: 'class', children: [] },
+        {
+          path: '/documentation/uikit/uiview',
+          title: 'UIView',
+          type: 'class',
+          children: [],
+        },
+      ]);
+
+      (indexCache.get as jest.Mock).mockReturnValue(null);
+      (httpClient.getJson as jest.Mock).mockResolvedValue(index);
+
+      const result = await searchFrameworkSymbols('uikit', 'class', undefined, 'swift', 10);
+
+      expect(result).not.toContain('/documentation/uikit/untitled');
+      expect(result).toContain('**Found:** 1 of 1 classes');
     });
   });
 
@@ -120,6 +247,19 @@ describe('searchFrameworkSymbols', () => {
       const result = await searchFrameworkSymbols('', 'class', undefined, 'swift', 10);
 
       expect(result).toContain('Error: search_framework_symbols failed');
+    });
+
+    it('should suggest a retry when the index request times out', async () => {
+      (indexCache.get as jest.Mock).mockReturnValue(null);
+      (httpClient.getJson as jest.Mock).mockRejectedValue(
+        new Error('Request timed out. Please try again later.'),
+      );
+
+      const result = await searchFrameworkSymbols('uikit', 'class', undefined, 'swift', 10);
+
+      expect(result).toContain('Error: search_framework_symbols failed');
+      expect(result).toContain('framework index is large');
+      expect(result).toContain('retry');
     });
 
     it('should handle unsupported language', async () => {
@@ -209,7 +349,7 @@ describe('searchFrameworkSymbols', () => {
       const result = await searchFrameworkSymbols('uikit', 'class', undefined, 'swift', 10);
 
       expect(result).toContain('UIView');
-      expect(result).toContain('Found:** 1 classes');
+      expect(result).toContain('Found:** 1 of 1 classes');
     });
 
     it('should handle framework name case variations', async () => {
@@ -223,9 +363,13 @@ describe('searchFrameworkSymbols', () => {
 
       // All should call the same lowercase URL
       expect(httpClient.getJson).toHaveBeenCalledWith(
-        'https://developer.apple.com/tutorials/data/index/uikit'
+        'https://developer.apple.com/tutorials/data/index/uikit',
+        expect.objectContaining({ timeout: expect.any(Number) }),
       );
       expect(httpClient.getJson).toHaveBeenCalledTimes(3);
+      expect(result1).toContain('**Found:** 1 of 4 classes');
+      expect(result2).toContain('**Found:** 1 of 4 classes');
+      expect(result3).toContain('**Found:** 1 of 4 classes');
     });
 
     it('should handle items with beta and deprecated flags', async () => {
