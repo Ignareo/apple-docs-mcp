@@ -88,15 +88,18 @@ describe('get-related-apis', () => {
       );
       
       expect(result).toContain('# Related APIs for view');
-      expect(result).toContain('**Found 5 related APIs:**');
-      expect(result).toContain('## Inherits From');
+      expect(result).toContain('**Found 5 related APIs (showing 5)**');
+      expect(result).toContain('## Apple recommends');
+      expect(result).toContain('### Inherits From');
       expect(result).toContain('[Protocol1]');
-      expect(result).toContain('## Conforms To');
+      expect(result).toContain('### Conforms To');
       expect(result).toContain('[Protocol2]');
       expect(result).toContain('[Protocol3]');
-      expect(result).toContain('## See Also: Related Views');
+      expect(result).toContain('### See Also: Related Views');
       expect(result).toContain('[Text]');
       expect(result).toContain('A view that displays text.');
+      // The type is constant for symbol references; it must not cost a line per item.
+      expect(result).not.toContain('Type: symbol');
     });
 
     it('should exclude inherited APIs when includeInherited is false', async () => {
@@ -153,7 +156,7 @@ describe('get-related-apis', () => {
 
       const result = await handleGetRelatedApis('invalid-url');
       
-      expect(result).toContain('Error: Failed to get related APIs:');
+      expect(result).toContain('Error: get_related_apis failed:');
       expect(result).toContain('Invalid Apple Developer Documentation URL');
     });
 
@@ -162,7 +165,7 @@ describe('get-related-apis', () => {
 
       const result = await handleGetRelatedApis(mockApiUrl);
       
-      expect(result).toContain('Error: Failed to get related APIs:');
+      expect(result).toContain('Error: get_related_apis failed:');
       expect(result).toContain('Network error');
     });
 
@@ -213,12 +216,84 @@ describe('get-related-apis', () => {
       const result = await handleGetRelatedApis(mockApiUrl);
 
       expect(result).toContain('# Related APIs for view');
-      expect(result).toContain('**Found 2 related APIs:**');
-      expect(result).toContain('## Conforming Types');
+      expect(result).toContain('**Found 2 related APIs (showing 2)**');
+      expect(result).toContain('### Conforming Types');
       expect(result).toContain('[AnyView]');
       expect(result).toContain('A type-erased view.');
       expect(result).toContain('[EmptyView]');
       expect(result).toContain('A view that doesn\'t display anything.');
+    });
+
+    it('should cap topic filler and report found vs shown', async () => {
+      const references: Record<string, any> = {};
+      const topicSections = Array.from({ length: 14 }, (_, sectionIndex) => {
+        const identifiers = Array.from({ length: 3 }, (_, itemIndex) => {
+          const index = sectionIndex * 3 + itemIndex;
+          const identifier = `swiftui/topic-${index}`;
+          references[identifier] = {
+            title: `Topic${index}`,
+            url: `/documentation/swiftui/topic-${index}`,
+            kind: 'symbol',
+          };
+          return identifier;
+        });
+        return { title: `Topic Section ${sectionIndex}`, identifiers };
+      });
+
+      const fillerResponse = {
+        identifier: 'swiftui/view',
+        title: 'View',
+        seeAlsoSections: [
+          {
+            title: 'Related Views',
+            identifiers: ['swiftui/text', 'swiftui/image'],
+          },
+        ],
+        topicSections,
+        references: {
+          ...references,
+          'swiftui/text': { title: 'Text', url: '/documentation/swiftui/text', kind: 'symbol' },
+          'swiftui/image': { title: 'Image', url: '/documentation/swiftui/image', kind: 'symbol' },
+        },
+      };
+
+      mockHttpClient.getJson.mockResolvedValue(fillerResponse);
+
+      const result = await handleGetRelatedApis(mockApiUrl);
+
+      // 2 recommendations + 30 topic-membership items (out of 42 topic items).
+      expect(result).toContain('**Found 44 related APIs (showing 32)**');
+      expect(result).toContain('## Topic membership');
+      expect(result).toContain('#### [Topic29]');
+      expect(result).not.toContain('#### [Topic30]');
+      expect(result).toContain('*Showing 32 of 44 related APIs*');
+    });
+
+    it('should render non-symbol types inline', async () => {
+      const typedResponse = {
+        identifier: 'swiftui/view',
+        title: 'View',
+        relationshipsSections: [
+          {
+            type: 'inheritsFrom',
+            title: 'Inherits From',
+            identifiers: ['swiftui/viewbase'],
+          },
+        ],
+        references: {
+          'swiftui/viewbase': {
+            title: 'ViewBase',
+            url: '/documentation/swiftui/viewbase',
+            kind: 'class',
+          },
+        },
+      };
+
+      mockHttpClient.getJson.mockResolvedValue(typedResponse);
+
+      const result = await handleGetRelatedApis(mockApiUrl);
+
+      expect(result).toContain('#### [ViewBase](https://developer.apple.com/documentation/swiftui/viewbase) — *class*');
     });
   });
 });

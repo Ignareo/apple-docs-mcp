@@ -213,6 +213,66 @@ describe('AppleDeveloperDocsMCPServer', () => {
         isError: true,
       });
     });
+
+    it('should mark a text response starting with "Error:" as an error', async () => {
+      const server = new AppleDeveloperDocsMCPServer();
+      (handleToolCall as jest.Mock).mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'Error: get_related_apis failed: missing page' }],
+      });
+
+      // Get the handler function
+      const callToolHandler = mockServer.setRequestHandler.mock.calls[1][1];
+      const result = await callToolHandler({
+        params: {
+          name: 'get_related_apis',
+          arguments: { apiUrl: 'https://developer.apple.com/documentation/missing' },
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe('Error: get_related_apis failed: missing page');
+    });
+
+    it('should keep success text responses unchanged (no isError)', async () => {
+      const server = new AppleDeveloperDocsMCPServer();
+      (handleToolCall as jest.Mock).mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'Related APIs for UIView' }],
+      });
+
+      // Get the handler function
+      const callToolHandler = mockServer.setRequestHandler.mock.calls[1][1];
+      const result = await callToolHandler({
+        params: {
+          name: 'get_related_apis',
+          arguments: { apiUrl: 'https://developer.apple.com/documentation/uikit/uiview' },
+        },
+      });
+
+      expect(result).toEqual({
+        content: [{ type: 'text', text: 'Related APIs for UIView' }],
+      });
+    });
+
+    it('should use the thrown object message instead of [object Object]', async () => {
+      const server = new AppleDeveloperDocsMCPServer();
+      (handleToolCall as jest.Mock).mockRejectedValueOnce({
+        type: 'API_ERROR',
+        message: 'Request failed with status 404',
+      });
+
+      // Get the handler function
+      const callToolHandler = mockServer.setRequestHandler.mock.calls[1][1];
+      const result = await callToolHandler({
+        params: {
+          name: 'get_related_apis',
+          arguments: { apiUrl: 'https://developer.apple.com/documentation/missing' },
+        },
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe('Error: Request failed with status 404');
+      expect(result.content[0].text).not.toContain('[object Object]');
+    });
   });
 
   describe('run method', () => {

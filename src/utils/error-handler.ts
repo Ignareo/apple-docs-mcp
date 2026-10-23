@@ -391,3 +391,66 @@ export function createToolErrorResponse(
 
   return createErrorResponse(error);
 }
+/**
+ * Convert any thrown value into a human-readable one-line message.
+ *
+ * `AppError` is a plain object (not an `Error` subclass), so the common
+ * `error instanceof Error ? error.message : String(error)` pattern renders it
+ * as "[object Object]". Always use this helper instead.
+ */
+export function describeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message || error.name;
+  }
+  if (typeof error === 'string') {
+    return error;
+  }
+  if (error && typeof error === 'object') {
+    const candidate = error as {
+      message?: unknown;
+      type?: unknown;
+      suggestions?: unknown;
+    };
+    if (typeof candidate.message === 'string' && candidate.message.trim() !== '') {
+      return candidate.message;
+    }
+    try {
+      const json = JSON.stringify(error);
+      if (json && json !== '{}') {
+        return json;
+      }
+    } catch {
+      // Fall through to String() below.
+    }
+  }
+  return String(error);
+}
+
+/**
+ * Whether a thrown value looks like a missing resource (HTTP 404 / Not Found).
+ */
+export function isNotFoundError(error: unknown): boolean {
+  return /(^|\D)404(\D|$)|not\s+found/i.test(describeError(error));
+}
+
+/**
+ * Build a one-line, actionable message for a tool failure.
+ *
+ * Prefixing the tool name keeps failures traceable even when the underlying
+ * error is just an `AppError`/string without context. A `hint` is appended in
+ * parentheses; when no explicit hint is given, 404/Not Found errors get the
+ * default "not a documentation page" hint.
+ */
+export function describeToolError(toolName: string, error: unknown, hint?: string): string {
+  const message = describeError(error).trim() || 'unknown error';
+
+  const hints: string[] = [];
+  if (hint) {
+    hints.push(hint);
+  } else if (isNotFoundError(error)) {
+    hints.push('the URL may not be a documentation page');
+  }
+
+  const suffix = hints.length > 0 ? ` (${hints.join('; ')})` : '';
+  return `${toolName} failed: ${message}${suffix}`;
+}

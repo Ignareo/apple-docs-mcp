@@ -16,6 +16,7 @@ import {
   getTechnologyOverviewsSchema,
   getSampleCodeSchema,
 } from '../schemas/index.js';
+import { describeError } from '../utils/error-handler.js';
 import {
   listWWDCVideosSchema,
   searchWWDCContentSchema,
@@ -255,6 +256,10 @@ export const toolHandlers: Record<string, ToolHandler> = {
       validatedArgs.year,
       validatedArgs.language,
       validatedArgs.limit,
+      {
+        snippetChars: validatedArgs.snippetChars,
+        matchesPerVideo: validatedArgs.matchesPerVideo,
+      },
     );
     return { content: [{ type: 'text', text: result }] };
   },
@@ -266,6 +271,12 @@ export const toolHandlers: Record<string, ToolHandler> = {
       validatedArgs.videoId,
       validatedArgs.includeTranscript,
       validatedArgs.includeCode,
+      {
+        maxTranscriptChars: validatedArgs.maxTranscriptChars,
+        query: validatedArgs.query,
+        includeResources: validatedArgs.includeResources,
+        includeRelatedVideos: validatedArgs.includeRelatedVideos,
+      },
     );
     return { content: [{ type: 'text', text: result }] };
   },
@@ -278,6 +289,7 @@ export const toolHandlers: Record<string, ToolHandler> = {
       validatedArgs.year,
       validatedArgs.language,
       validatedArgs.limit,
+      { maxCodeChars: validatedArgs.maxCodeChars },
     );
     return { content: [{ type: 'text', text: result }] };
   },
@@ -347,7 +359,7 @@ export async function handleToolCall(
     return {
       content: [{
         type: 'text',
-        text: `Error: ${error instanceof Error ? error.message : String(error)}`,
+        text: `Error: ${describeError(error)}`,
       }],
       isError: true,
     };

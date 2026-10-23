@@ -12,6 +12,7 @@ import { wwdcDataCache } from './cache.js';
 import { WWDC_CONFIG } from './constants.js';
 import { getWWDCDataDirectory } from './wwdc-data-source-path.js';
 import type { WWDCVideo, GlobalMetadata, TopicIndex, YearIndex } from '../types/wwdc.js';
+import { describeError } from './error-handler.js';
 
 // Get the data directory from the separate module
 const WWDC_DATA_DIR = getWWDCDataDirectory();
@@ -27,7 +28,7 @@ async function readBundledFile(filePath: string): Promise<string> {
     logger.debug(`Loaded bundled data: ${filePath}`);
     return content;
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     logger.error(`Failed to read bundled data: ${filePath}`, error);
     throw new Error(`Failed to load WWDC data from ${filePath}: ${errorMessage}`);
   }

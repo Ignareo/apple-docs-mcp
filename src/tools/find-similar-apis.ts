@@ -2,9 +2,21 @@ import { convertToJsonApiUrl } from '../utils/url-converter.js';
 import { httpClient } from '../utils/http-client.js';
 import { logger } from '../utils/logger.js';
 import { PROCESSING_LIMITS, SEARCH_DEPTH_LIMITS } from '../utils/constants.js';
+import { describeError, describeToolError } from '../utils/error-handler.js';
 
 /**
- * 相似API信息接口
+ * Where a "similar" API was discovered. This is honest provenance, not a score.
+ */
+type SimilarSource = 'See Also' | 'Topic Group' | 'Deep Related';
+
+const SOURCE_ORDER: Record<SimilarSource, number> = {
+  'See Also': 0,
+  'Topic Group': 1,
+  'Deep Related': 2,
+};
+
+/**
+ * Similar API information (no fabricated similarity score).
  */
 interface SimilarAPI {
   title: string;
@@ -12,10 +24,10 @@ interface SimilarAPI {
   identifier: string;
   abstract?: string;
   category: string;
-  similarityType: string;
+  source: SimilarSource;
   symbolKind?: string;
   platforms?: string[];
-  confidence: number; // 1-10 相似度评分
+  deprecated: boolean;
 }
 
 interface SeeAlsoSection {
@@ -31,11 +43,13 @@ interface TopicSection {
 interface AppleDocData {
   identifier?: string;
   title?: string;
+  deprecated?: boolean;
+  deprecationSummary?: unknown[];
   metadata?: {
     title?: string;
     symbolKind?: string;
     roleHeading?: string;
-    platforms?: Array<{ name: string; introducedAt?: string }>;
+    platforms?: Array<{ name: string; introducedAt?: string; deprecatedAt?: string; deprecated?: boolean }>;
   };
   seeAlsoSections?: SeeAlsoSection[];
   topicSections?: TopicSection[];
@@ -100,11 +114,14 @@ export async function handleFindSimilarApis(
       similarApis.push(...deepApis);
     }
 
-    // 去重和评分
-    const uniqueApis = deduplicateAndScore(similarApis);
+    // 去重（保留最强的来源）
+    const uniqueApis = deduplicateApis(similarApis);
 
-    // 按相似度排序
-    uniqueApis.sort((a, b) => b.confidence - a.confidence);
+    // 按来源排序；来源 API 已废弃时，非废弃候选项优先（稳定排序）
+    uniqueApis.sort((a, b) => SOURCE_ORDER[a.source] - SOURCE_ORDER[b.source]);
+    if (isSourceDeprecated(data)) {
+      uniqueApis.sort((a, b) => Number(a.deprecated) - Number(b.deprecated));
+    }
 
     // 限制结果数量
     const maxResults = SEARCH_DEPTH_LIMITS[searchDepth as keyof typeof SEARCH_DEPTH_LIMITS] || SEARCH_DEPTH_LIMITS.medium;
@@ -113,14 +130,13 @@ export async function handleFindSimilarApis(
     // Get the title from data
     const title = data.title || data.metadata?.title || data.identifier?.split('/').pop() || 'API';
 
-    return formatSimilarApis(apiUrl, limitedApis, title, data);
+    return formatSimilarApis(apiUrl, limitedApis, title, data, references);
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    if (errorMessage.includes('Invalid Apple Developer Documentation URL')) {
+    if (describeError(error).includes('Invalid Apple Developer Documentation URL')) {
       throw error;
     }
-    throw new Error(errorMessage);
+    throw new Error(describeToolError('find_similar_apis', error));
   }
 }
 
@@ -145,7 +161,6 @@ function extractSeeAlsoApis(
         identifier,
         section.title,
         'See Also',
-        8, // 高相似度
         references,
       );
       if (api) {
@@ -181,7 +196,6 @@ function extractTopicApis(
         identifier,
         section.title,
         'Topic Group',
-        6, // 中等相似度
         references,
       );
       if (api) {
@@ -225,10 +239,10 @@ async function extractDeepRelatedApis(seedApis: SimilarAPI[]): Promise<SimilarAP
       // 只从"另请参阅"部分获取，避免过度扩展
       if (data.seeAlsoSections) {
         const relatedApis = extractSeeAlsoApis(data.seeAlsoSections, references);
-        // 降低相似度评分
+        // 记录真实来源（通过哪个 API 发现），不再使用伪造的分数
         relatedApis.forEach(api => {
-          api.confidence = Math.max(api.confidence - 2, 3);
-          api.similarityType = 'Deep Related';
+          api.source = 'Deep Related';
+          api.category = `${api.category} via ${seedApi.title}`;
         });
         deepApis.push(...relatedApis);
       }
@@ -246,8 +260,7 @@ async function extractDeepRelatedApis(seedApis: SimilarAPI[]): Promise<SimilarAP
 function createSimilarApi(
   identifier: string,
   category: string,
-  similarityType: string,
-  confidence: number,
+  source: SimilarSource,
   references?: Record<string, any>,
 ): SimilarAPI | null {
   if (references?.[identifier]) {
@@ -258,10 +271,10 @@ function createSimilarApi(
       identifier,
       abstract: ref.abstract ? ref.abstract.map((a: any) => a.text || '').join(' ').trim() : undefined,
       category,
-      similarityType,
+      source,
       symbolKind: ref.kind || ref.symbolKind,
       platforms: ref.platforms ? ref.platforms.map((p: any) => p.name) : undefined,
-      confidence,
+      deprecated: ref.deprecated === true,
     };
   }
 
@@ -276,8 +289,8 @@ function createSimilarApi(
       url: `https://developer.apple.com/documentation/${pathPart}`,
       identifier,
       category,
-      similarityType,
-      confidence: confidence - 1, // 略降相似度
+      source,
+      deprecated: false,
     };
   }
 
@@ -285,19 +298,14 @@ function createSimilarApi(
 }
 
 /**
- * 去重和评分
+ * 去重（保留来源优先级最高的记录）
  */
-function deduplicateAndScore(apis: SimilarAPI[]): SimilarAPI[] {
+function deduplicateApis(apis: SimilarAPI[]): SimilarAPI[] {
   const apiMap = new Map<string, SimilarAPI>();
 
   for (const api of apis) {
     const existing = apiMap.get(api.identifier);
-    if (existing) {
-      // 如果已存在，保留评分更高的
-      if (api.confidence > existing.confidence) {
-        apiMap.set(api.identifier, api);
-      }
-    } else {
+    if (!existing || SOURCE_ORDER[api.source] < SOURCE_ORDER[existing.source]) {
       apiMap.set(api.identifier, api);
     }
   }
@@ -305,7 +313,16 @@ function deduplicateAndScore(apis: SimilarAPI[]): SimilarAPI[] {
   return Array.from(apiMap.values());
 }
 
-
+/**
+ * 判断来源 API 自身是否已废弃（Apple 用 deprecatedAt 表示）。
+ */
+function isSourceDeprecated(data: AppleDocData): boolean {
+  return Boolean(
+    data.deprecated === true ||
+    (Array.isArray(data.deprecationSummary) && data.deprecationSummary.length > 0) ||
+    data.metadata?.platforms?.some(platform => Boolean(platform.deprecatedAt || platform.deprecated)),
+  );
+}
 
 /**
  * 格式化相似API结果
@@ -315,6 +332,7 @@ function formatSimilarApis(
   similarApis: SimilarAPI[],
   originalApiName?: string,
   originalData?: AppleDocData,
+  references?: Record<string, any>,
 ): string {
   const apiName = originalApiName || new URL(originalUrl).pathname.split('/').pop() || 'API';
   let content = `# Similar APIs to ${apiName}\n\n`;
@@ -334,13 +352,22 @@ function formatSimilarApis(
   }
 
   content += `**Source:** [${originalUrl}](${originalUrl})\n\n`;
-  content += `**Found ${similarApis.length} similar APIs (sorted by relevance):**\n\n`;
 
-  // Group by category instead of similarity type for better organization
+  // 来源已废弃时，展示 Apple 提供的迁移说明
+  const migration = originalData && isSourceDeprecated(originalData)
+    ? renderDeprecationSummary(originalData.deprecationSummary, references)
+    : undefined;
+  if (migration) {
+    content += `> **Migration:** ${migration}\n\n`;
+  }
+
+  content += `**Found ${similarApis.length} similar APIs:**\n\n`;
+
+  // Group by source + Apple section, preserving discovery order
   const groupedByCategory = new Map<string, SimilarAPI[]>();
 
   for (const api of similarApis) {
-    const key = `${api.similarityType}: ${api.category}`;
+    const key = `${api.source}: ${api.category}`;
     if (!groupedByCategory.has(key)) {
       groupedByCategory.set(key, []);
     }
@@ -355,18 +382,16 @@ function formatSimilarApis(
     }
   }
 
-  // 相似度分析
-  content += '## Similarity Analysis\n\n';
-  const avgConfidence = similarApis.reduce((sum, api) => sum + api.confidence, 0) / similarApis.length;
-  content += `**Average Similarity:** ${avgConfidence.toFixed(1)}/10\n`;
-
-  const highConfidenceApis = similarApis.filter(api => api.confidence >= 7);
-  if (highConfidenceApis.length > 0) {
-    content += `**Highly Similar APIs:** ${highConfidenceApis.length}\n`;
+  // 用真实的来源统计代替伪造的相似度分析
+  const sourceCounts = new Map<SimilarSource, number>();
+  for (const api of similarApis) {
+    sourceCounts.set(api.source, (sourceCounts.get(api.source) || 0) + 1);
   }
-
-  const categories = [...new Set(similarApis.map(api => api.category))];
-  content += `**Categories:** ${categories.join(', ')}\n\n`;
+  const sourceSummary = Array.from(sourceCounts.entries())
+    .sort((a, b) => SOURCE_ORDER[a[0]] - SOURCE_ORDER[b[0]])
+    .map(([source, count]) => `${source} (${count})`)
+    .join(', ');
+  content += `**Sources:** ${sourceSummary}\n\n`;
 
   content += `---\n\n*Total: ${similarApis.length} similar APIs found*`;
 
@@ -378,19 +403,16 @@ function formatSimilarApis(
  * 格式化单个相似API
  */
 function formatSingleSimilarApi(api: SimilarAPI): string {
-  let content = `### [${api.title}](${api.url})\n`;
+  let content = `### [${api.title}](${api.url})${api.deprecated ? ' (Deprecated)' : ''}\n`;
 
   if (api.abstract) {
     content += `${api.abstract}\n\n`;
   }
 
-  // 添加元数据
-  const metadata = [`Similarity: ${api.confidence}/10`];
+  // 诚实的来源信息（不再有伪造的 Similarity 分数）
+  const metadata = [`Source: ${api.source} (${api.category})`];
   if (api.symbolKind) {
     metadata.push(`Type: ${api.symbolKind}`);
-  }
-  if (api.category !== api.similarityType) {
-    metadata.push(`Category: ${api.category}`);
   }
 
   content += `*${metadata.join(' | ')}*\n\n`;
@@ -401,4 +423,42 @@ function formatSingleSimilarApi(api: SimilarAPI): string {
   }
 
   return content;
+}
+
+/**
+ * 将 Apple 的 deprecationSummary 渲染为一行纯文本（引用解析为名称）。
+ */
+function renderDeprecationSummary(
+  summary: unknown[] | undefined,
+  references?: Record<string, any>,
+): string | undefined {
+  if (!Array.isArray(summary)) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  for (const block of summary) {
+    const paragraph = block as { inlineContent?: unknown[]; text?: string };
+    if (Array.isArray(paragraph.inlineContent)) {
+      parts.push(paragraph.inlineContent.map(node => renderInlineNode(node, references)).join(''));
+    } else if (typeof paragraph.text === 'string') {
+      parts.push(paragraph.text);
+    }
+  }
+
+  const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+  return text.length > 0 ? text : undefined;
+}
+
+function renderInlineNode(node: unknown, references?: Record<string, any>): string {
+  const inline = node as { type?: string; text?: string; identifier?: string };
+  if (inline.type === 'reference' && inline.identifier) {
+    const refTitle = references?.[inline.identifier]?.title;
+    if (typeof refTitle === 'string' && refTitle.length > 0) {
+      return refTitle;
+    }
+    const segments = inline.identifier.split('/');
+    return segments[segments.length - 1] || '';
+  }
+  return typeof inline.text === 'string' ? inline.text : '';
 }

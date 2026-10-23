@@ -2,6 +2,7 @@ import { technologiesCache, generateUrlCacheKey } from '../utils/cache.js';
 import { APPLE_URLS, API_LIMITS } from '../utils/constants.js';
 import { httpClient } from '../utils/http-client.js';
 import { logger } from '../utils/logger.js';
+import { describeError } from '../utils/error-handler.js';
 
 /**
  * 技术信息接口
@@ -27,6 +28,12 @@ interface TechnologiesData {
     kind: string;
     groups: TechnologyGroup[];
   }>;
+}
+
+interface TechnologyFilterResult {
+  groups: TechnologyGroup[];
+  /** Total number of technologies matching the filters, before the per-category limit. */
+  total: number;
 }
 
 /**
@@ -58,7 +65,7 @@ export async function handleListTechnologies(
     const technologies = parseTechnologies(data);
 
     // 应用过滤器
-    const filteredTechnologies = applyTechnologyFilters(technologies, {
+    const filtered = applyTechnologyFilters(technologies, {
       category,
       language,
       includeBeta,
@@ -66,7 +73,7 @@ export async function handleListTechnologies(
     });
 
     // 格式化输出
-    const result = formatTechnologiesList(filteredTechnologies);
+    const result = formatTechnologiesList(filtered.groups, filtered.total);
 
     // Cache the result
     technologiesCache.set(cacheKey, result);
@@ -74,7 +81,7 @@ export async function handleListTechnologies(
     return result;
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to list technologies: ${errorMessage}`;
   }
 }
@@ -115,6 +122,9 @@ function parseTechnologies(data: TechnologiesData): TechnologyGroup[] {
 
 /**
  * 应用过滤器
+ *
+ * `limit` 按分类（group）生效，而不是全局生效；同时返回过滤后的真实总数，
+ * 以便输出 "Total: N (showing M of N)"。
  */
 function applyTechnologyFilters(
   groups: TechnologyGroup[],
@@ -124,82 +134,93 @@ function applyTechnologyFilters(
     includeBeta?: boolean;
     limit?: number;
   },
-): TechnologyGroup[] {
-  let filteredGroups = groups
-    .map(group => {
-      // 分类过滤
-      if (filters.category && !group.name.toLowerCase().includes(filters.category.toLowerCase())) {
-        return null;
+): TechnologyFilterResult {
+  const category = filters.category?.toLowerCase();
+  const limit = filters.limit !== undefined && filters.limit >= 0
+    ? filters.limit
+    : API_LIMITS.DEFAULT_TECHNOLOGIES_LIMIT;
+
+  const filteredGroups: TechnologyGroup[] = [];
+  let total = 0;
+
+  for (const group of groups) {
+    const groupNameMatches = category !== undefined && group.name.toLowerCase().includes(category);
+
+    const matchingTechnologies = group.technologies.filter(tech => {
+      // Beta 过滤
+      if (!filters.includeBeta && tech.tags.includes('Beta')) {
+        return false;
       }
 
-      // 技术过滤
-      const filteredTechnologies = group.technologies.filter(tech => {
-        // Beta 过滤
-        if (!filters.includeBeta && tech.tags.includes('Beta')) {
-          return false;
-        }
+      // 语言过滤
+      if (filters.language && !tech.languages.includes(filters.language)) {
+        return false;
+      }
 
-        // 语言过滤
-        if (filters.language && !tech.languages.includes(filters.language)) {
-          return false;
-        }
+      // 分类过滤：匹配分组名称，或技术名称/标签
+      if (category && !groupNameMatches && !technologyMatchesCategory(tech, category)) {
+        return false;
+      }
 
-        return true;
-      });
+      return true;
+    });
 
-      return filteredTechnologies.length > 0
-        ? { ...group, technologies: filteredTechnologies }
-        : null;
-    })
-    .filter((group): group is TechnologyGroup => group !== null);
-
-  // 应用 limit 限制
-  if (filters.limit !== undefined && filters.limit >= 0) {
-    if (filters.limit === 0) {
-      // 如果 limit 为 0，返回空数组
-      return [];
+    if (matchingTechnologies.length === 0) {
+      continue;
     }
 
-    let totalCount = 0;
-    filteredGroups = filteredGroups.map(group => {
-      const availableSlots = filters.limit! - totalCount;
-      if (availableSlots <= 0) {
-        return null;
-      }
+    total += matchingTechnologies.length;
 
-      const limitedTechnologies = group.technologies.slice(0, availableSlots);
-      totalCount += limitedTechnologies.length;
+    // limit 按分类生效（limit 为 0 时不展示，但仍报告真实总数）
+    if (limit === 0) {
+      continue;
+    }
 
-      return {
-        ...group,
-        technologies: limitedTechnologies,
-      };
-    }).filter((group): group is TechnologyGroup => group !== null && group.technologies.length > 0);
+    filteredGroups.push({
+      ...group,
+      technologies: matchingTechnologies.slice(0, limit),
+    });
   }
 
-  return filteredGroups;
+  return { groups: filteredGroups, total };
+}
+
+/**
+ * 技术名称、标识符或标签是否匹配分类关键字（大小写不敏感）。
+ */
+function technologyMatchesCategory(tech: Technology, category: string): boolean {
+  return tech.title.toLowerCase().includes(category) ||
+    tech.identifier.toLowerCase().includes(category) ||
+    tech.tags.some(tag => tag.toLowerCase().includes(category));
+}
+
+function pluralizeTechnologies(count: number): string {
+  return count === 1 ? 'technology' : 'technologies';
 }
 
 /**
  * 格式化技术列表
  */
-function formatTechnologiesList(groups: TechnologyGroup[]): string {
+function formatTechnologiesList(groups: TechnologyGroup[], total: number): string {
   if (groups.length === 0) {
-    return 'No technologies found matching the specified criteria.';
+    if (total === 0) {
+      return 'No technologies found matching the specified criteria.';
+    }
+    return `*Total: ${total} ${pluralizeTechnologies(total)} (showing 0 of ${total})*`;
   }
 
   let content = '# Apple Developer Technologies\n\n';
 
-  // 统计信息
-  const totalTechs = groups.reduce((sum, group) => sum + group.technologies.length, 0);
+  // 诚实统计：真实总数 + 实际展示数量
+  const shownTechs = groups.reduce((sum, group) => sum + group.technologies.length, 0);
   const betaTechs = groups.reduce((sum, group) =>
     sum + group.technologies.filter(tech => tech.tags.includes('Beta')).length, 0);
 
-  content += `*Found ${totalTechs} technologies`;
+  content += `*Total: ${total} ${pluralizeTechnologies(total)} (showing ${shownTechs} of ${total}`;
   if (betaTechs > 0) {
-    content += ` (${betaTechs} in beta)`;
+    content += `, ${betaTechs} in beta`;
   }
-  content += '*\n\n';
+  content += ')*\n\n';
 
   // 按分类显示
   groups.forEach(group => {

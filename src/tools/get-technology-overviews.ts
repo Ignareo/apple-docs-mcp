@@ -2,6 +2,7 @@ import { technologyOverviewsCache, generateUrlCacheKey } from '../utils/cache.js
 import { APPLE_URLS } from '../utils/constants.js';
 import { httpClient } from '../utils/http-client.js';
 import { logger } from '../utils/logger.js';
+import { describeError } from '../utils/error-handler.js';
 
 /**
  * Interface for Technology Overviews data
@@ -92,7 +93,7 @@ export async function handleGetTechnologyOverviews(
     return result;
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+    const errorMessage = describeError(error);
     logger.error('Error fetching technology overviews:', error);
     return `Error: Failed to fetch technology overviews: ${errorMessage}`;
   }

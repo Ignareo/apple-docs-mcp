@@ -93,3 +93,13 @@ describe('URL Converter', () => {
     });
   });
 });
+describe('URL Converter — HIG support', () => {
+  it('should convert Human Interface Guidelines pages to their JSON endpoint', () => {
+    expect(convertToJsonApiUrl('https://developer.apple.com/design/human-interface-guidelines/buttons'))
+      .toBe('https://developer.apple.com/tutorials/data/design/human-interface-guidelines/buttons.json');
+    expect(convertToJsonApiUrl('https://developer.apple.com/design/human-interface-guidelines/buttons/'))
+      .toBe('https://developer.apple.com/tutorials/data/design/human-interface-guidelines/buttons.json');
+    expect(convertToJsonApiUrl('https://developer.apple.com/design/human-interface-guidelines'))
+      .toBe('https://developer.apple.com/tutorials/data/design/human-interface-guidelines.json');
+  });
+});

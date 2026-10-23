@@ -2,6 +2,7 @@ import { updatesCache, generateUrlCacheKey } from '../utils/cache.js';
 import { APPLE_URLS } from '../utils/constants.js';
 import { httpClient } from '../utils/http-client.js';
 import { logger } from '../utils/logger.js';
+import { describeError } from '../utils/error-handler.js';
 
 /**
  * Interface for Updates data
@@ -97,7 +98,7 @@ export async function handleGetDocumentationUpdates(
     return result;
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : JSON.stringify(error);
+    const errorMessage = describeError(error);
     logger.error('Error fetching documentation updates:', error);
     return `Error: Failed to fetch documentation updates: ${errorMessage}`;
   }
@@ -113,22 +114,31 @@ function parseUpdates(updatesData: UpdatesData, updatesIndex: UpdatesIndexData) 
   if (updatesData.topicSections) {
     updatesData.topicSections.forEach(section => {
       const sectionCategory = getSectionCategory(section.title);
+      // Apple publishes past WWDC coverage under a "Past releases" section,
+      // so the section title alone cannot classify its entries as WWDC.
+      const isPastReleases = /past\s*releases?/i.test(section.title);
 
       section.identifiers.forEach(identifier => {
         const reference = updatesData.references[identifier];
         if (reference) {
+          const looksLikeWwdc = /^WWDC\d{2,4}$/i.test(reference.title ?? '')
+            || /wwdc\d{2,4}/i.test(reference.url ?? '');
+          const itemCategory: UpdateCategory = isPastReleases && looksLikeWwdc
+            ? 'wwdc'
+            : sectionCategory;
+
           const updateItem: UpdateItem = {
             title: reference.title,
             url: reference.url ? `https://developer.apple.com${reference.url}` : '',
             description: reference.abstract?.[0]?.text ?? '',
-            category: sectionCategory,
+            category: itemCategory,
             type: reference.kind ?? 'update',
             identifier,
             images: reference.images,
           };
 
           // Extract year from WWDC titles
-          if (sectionCategory === 'wwdc' && reference.title) {
+          if (itemCategory === 'wwdc' && reference.title) {
             const yearMatch = reference.title.match(/WWDC(\d{2,4})/);
             if (yearMatch) {
               updateItem.year = yearMatch[1].length === 2 ? `20${yearMatch[1]}` : yearMatch[1];

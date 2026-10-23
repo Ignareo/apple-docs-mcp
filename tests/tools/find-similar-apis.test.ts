@@ -48,11 +48,13 @@ describe('find-similar-apis', () => {
           title: 'Label',
           url: '/documentation/swiftui/label',
           abstract: [{ type: 'text', text: 'A view that displays text and an icon.' }],
+          kind: 'symbol',
         },
         'swiftui/textfield': {
           title: 'TextField',
           url: '/documentation/swiftui/textfield',
           abstract: [{ type: 'text', text: 'A control for entering text.' }],
+          kind: 'symbol',
         },
         'swiftui/text/init': {
           title: 'init(_:)',
@@ -79,6 +81,10 @@ describe('find-similar-apis', () => {
       expect(result).toContain('### [Label]');
       expect(result).toContain('A view that displays text and an icon.');
       expect(result).toContain('### [TextField]');
+      expect(result).toContain('*Source: See Also (Text Display) | Type: symbol*');
+      expect(result).not.toContain('Similarity');
+      expect(result).not.toContain('Average Similarity');
+      expect(result).toContain('**Sources:** See Also (2)');
       expect(result).toContain('2 similar APIs found');
     });
 
@@ -91,6 +97,8 @@ describe('find-similar-apis', () => {
       expect(result).toContain('## Topic Group: Creating Text Views');
       expect(result).toContain('### [init(_:)]');
       expect(result).toContain('### [init(String)]');
+      expect(result).toContain('*Source: Topic Group (Creating Text Views)*');
+      expect(result).toContain('**Sources:** See Also (2), Topic Group (2)');
       expect(result).toContain('4 similar APIs found');
     });
 
@@ -130,6 +138,7 @@ describe('find-similar-apis', () => {
       expect(result).toContain('## See Also: Text Display');
       expect(result).toContain('### [Label]');
       expect(result).toContain('LabelStyle');
+      expect(result).toContain('Source: Deep Related (Label Components via Label)');
     });
 
     it('should filter by category', async () => {
@@ -223,6 +232,75 @@ describe('find-similar-apis', () => {
       const labelOccurrences = (result.match(/### \[Label\]/g) || []).length;
       expect(labelOccurrences).toBe(1);
       expect(result).toContain('3 similar APIs found');
+    });
+
+    it('should mark deprecated results and surface Apple migration guidance', async () => {
+      const deprecatedResponse = {
+        data: {
+          identifier: 'uikit/uialertview',
+          title: 'UIAlertView',
+          metadata: {
+            roleHeading: 'Class',
+            platforms: [{ name: 'iOS', introducedAt: '2.0', deprecatedAt: '9.0' }],
+          },
+          deprecationSummary: [
+            {
+              type: 'paragraph',
+              inlineContent: [
+                { type: 'text', text: 'Instead, use ' },
+                {
+                  type: 'reference',
+                  identifier: 'doc://com.apple.uikit/documentation/UIKit/UIAlertController',
+                },
+                { type: 'text', text: '.' },
+              ],
+            },
+          ],
+          seeAlsoSections: [
+            {
+              title: 'Deprecated classes',
+              identifiers: ['uikit/uiactionsheet', 'uikit/uialertviewstyle'],
+            },
+          ],
+          topicSections: [
+            {
+              title: 'Modern alternatives',
+              identifiers: ['uikit/uialertcontroller'],
+            },
+          ],
+        },
+        references: {
+          'uikit/uiactionsheet': {
+            title: 'UIActionSheet',
+            url: '/documentation/uikit/uiactionsheet',
+            deprecated: true,
+          },
+          'uikit/uialertviewstyle': {
+            title: 'UIAlertViewStyle',
+            url: '/documentation/uikit/uialertviewstyle',
+            deprecated: true,
+          },
+          'uikit/uialertcontroller': {
+            title: 'UIAlertController',
+            url: '/documentation/uikit/uialertcontroller',
+          },
+          'doc://com.apple.uikit/documentation/UIKit/UIAlertController': {
+            title: 'UIAlertController',
+            url: '/documentation/uikit/uialertcontroller',
+          },
+        },
+      };
+
+      mockHttpClient.getJson.mockResolvedValue(deprecatedResponse);
+
+      const result = await handleFindSimilarApis('https://developer.apple.com/documentation/uikit/uialertview', 'medium');
+
+      expect(result).toContain('> **Migration:** Instead, use UIAlertController.');
+      expect(result).toContain('### [UIActionSheet]');
+      expect(result).toContain('(Deprecated)');
+      expect(result).not.toContain('Similarity:');
+      // Non-deprecated options must be listed before deprecated ones for a deprecated source API.
+      expect(result.indexOf('[UIAlertController]')).toBeLessThan(result.indexOf('[UIActionSheet]'));
     });
   });
 });

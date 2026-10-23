@@ -52,6 +52,7 @@ describe('WWDC Tools Integration', () => {
       totalVideos: 100,
       topics: [
         { id: 'swiftui', name: 'SwiftUI', url: 'https://example.com' },
+        { id: 'swiftui-ui-frameworks', name: 'SwiftUI & UI Frameworks', url: 'https://example.com/swiftui-ui-frameworks' },
       ],
       years: ['2025', '2024'],
       statistics: {
@@ -91,7 +92,7 @@ describe('WWDC Tools Integration', () => {
       hasTranscript: true,
       hasCode: true,
       transcript: {
-        fullText: 'Test transcript content',
+        fullText: 'Test transcript content\nSecond example line',
         segments: [],
       },
       codeExamples: [
@@ -104,6 +105,9 @@ describe('WWDC Tools Integration', () => {
       ],
       resources: {
         download: 'https://example.com/download',
+        resourceLinks: [
+          { title: 'Sample Download', url: 'https://example.com/sample' },
+        ],
       },
       relatedVideos: [],
       url: 'https://example.com/10001',
@@ -157,6 +161,24 @@ describe('WWDC Tools Integration', () => {
 
       expect(mockLoadTopicIndex).toHaveBeenCalledWith('swiftui-ui-frameworks');
     });
+
+    it('should report totals and the videoId so callers can chain', async () => {
+      const result = await handleToolCall('list_wwdc_videos', { year: '2025' }, mockServer);
+      const text = result.content[0].text;
+
+      expect(text).toContain('Showing 1 of 1 videos');
+      expect(text).toContain('videoId: 10001');
+    });
+
+    it('should flag an unknown year as an error with valid options', async () => {
+      const result = await handleToolCall('list_wwdc_videos', { year: '2026' }, mockServer);
+      const text = result.content[0].text;
+
+      expect(text.startsWith('Error: ')).toBe(true);
+      expect(text).toContain('Unknown WWDC year "2026"');
+      expect(text).toContain('Valid years:');
+      expect(text).not.toContain('No WWDC videos found');
+    });
   });
 
   describe('search_wwdc_content', () => {
@@ -185,6 +207,56 @@ describe('WWDC Tools Integration', () => {
 
       expect(mockLoadYearIndex).toHaveBeenCalledWith('2025');
     });
+
+    it('should thread snippetChars through the CallTool layer', async () => {
+      const result = await handleToolCall(
+        'search_wwdc_content',
+        { query: 'transcript', searchIn: 'transcript', year: '2025', snippetChars: 5 },
+        mockServer
+      );
+      const text = result.content[0].text;
+
+      expect(text).toContain('Total matches: 1 (showing 1)');
+      expect(text).toContain('[snippet truncated: showing 5 of');
+    });
+
+    it('should thread matchesPerVideo through the CallTool layer', async () => {
+      const result = await handleToolCall(
+        'search_wwdc_content',
+        { query: 'e', searchIn: 'transcript', year: '2025', matchesPerVideo: 2 },
+        mockServer
+      );
+
+      // Both transcript lines contain 'e', so there are 2 matches to show.
+      expect(result.content[0].text).toContain('Total matches: 2 (showing 2)');
+    });
+
+    it('should reject an invalid year with valid options and snapshot', async () => {
+      const result = await handleToolCall(
+        'search_wwdc_content',
+        { query: 'SwiftUI', year: '2026' },
+        mockServer
+      );
+      const text = result.content[0].text;
+
+      expect(text.startsWith('Error: ')).toBe(true);
+      expect(text).toContain('Unknown WWDC year "2026"');
+      expect(text).toContain('Snapshot: 2025-01-01 · 2024–2025 · 100 sessions');
+      expect(text).not.toContain('No content found');
+    });
+
+    it('should reject an invalid language with valid options', async () => {
+      const result = await handleToolCall(
+        'search_wwdc_content',
+        { query: 'SwiftUI', searchIn: 'code', language: 'python' },
+        mockServer
+      );
+      const text = result.content[0].text;
+
+      expect(text.startsWith('Error: ')).toBe(true);
+      expect(text).toContain('Unknown code language "python"');
+      expect(text).toContain('Valid languages: swift');
+    });
   });
 
   describe('get_wwdc_video', () => {
@@ -212,6 +284,56 @@ describe('WWDC Tools Integration', () => {
 
       expect(result.content[0].text).toContain('transcript');
     });
+
+    it('should thread maxTranscriptChars through the CallTool layer', async () => {
+      const result = await handleToolCall(
+        'get_wwdc_video',
+        {
+          videoId: '10001',
+          year: '2025',
+          includeCode: false,
+          includeResources: false,
+          includeRelatedVideos: false,
+          maxTranscriptChars: 5,
+        },
+        mockServer
+      );
+      const text = result.content[0].text;
+
+      expect(text).toContain('[transcript truncated: showing 5 of 43 chars — pass query or raise maxTranscriptChars]');
+    });
+
+    it('should thread query through the CallTool layer', async () => {
+      const result = await handleToolCall(
+        'get_wwdc_video',
+        { videoId: '10001', year: '2025', query: 'Second' },
+        mockServer
+      );
+      const text = result.content[0].text;
+
+      expect(text).toContain('*Keyword filter: "Second" (1 matching lines of 2)*');
+      expect(text).toContain('Second example line');
+    });
+
+    it('should omit resources when includeResources is false', async () => {
+      const result = await handleToolCall(
+        'get_wwdc_video',
+        { videoId: '10001', year: '2025', includeResources: false },
+        mockServer
+      );
+
+      expect(result.content[0].text).not.toContain('Sample Download');
+    });
+
+    it('should include resources by default', async () => {
+      const result = await handleToolCall(
+        'get_wwdc_video',
+        { videoId: '10001', year: '2025' },
+        mockServer
+      );
+
+      expect(result.content[0].text).toContain('Sample Download');
+    });
   });
 
   describe('get_wwdc_code_examples', () => {
@@ -234,6 +356,37 @@ describe('WWDC Tools Integration', () => {
       );
 
       expect(result).toHaveProperty('content');
+    });
+
+    it('should thread maxCodeChars through the CallTool layer', async () => {
+      const bigCodeVideo = {
+        ...(await mockLoadVideoData('2025', '10001')),
+        codeExamples: [{ language: 'swift', title: 'Huge', code: 'q'.repeat(4000) }],
+      };
+      mockLoadVideoData.mockResolvedValue(bigCodeVideo as any);
+
+      const result = await handleToolCall(
+        'get_wwdc_code_examples',
+        { maxCodeChars: 200 },
+        mockServer
+      );
+      const text = result.content[0].text;
+
+      expect(text).toContain('[code example truncated: showing 200 of 4000 chars]');
+    });
+
+    it('should reject an invalid year with valid options and snapshot', async () => {
+      const result = await handleToolCall(
+        'get_wwdc_code_examples',
+        { year: '2026' },
+        mockServer
+      );
+      const text = result.content[0].text;
+
+      expect(text.startsWith('Error: ')).toBe(true);
+      expect(text).toContain('Unknown WWDC year "2026"');
+      expect(text).toContain('Snapshot:');
+      expect(text).not.toContain('No code examples found');
     });
   });
 
@@ -284,6 +437,12 @@ describe('WWDC Tools Integration', () => {
       expect(result.content[0].text).toContain('2025');
       expect(result.content[0].text).toContain('2024');
       expect(mockLoadGlobalMetadata).toHaveBeenCalled();
+    });
+
+    it('should disclose the snapshot date, year range and session count', async () => {
+      const result = await handleToolCall('list_wwdc_years', {}, mockServer);
+
+      expect(result.content[0].text).toContain('Snapshot: 2025-01-01 · 2024–2025 · 100 sessions');
     });
   });
 

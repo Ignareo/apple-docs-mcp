@@ -1,6 +1,7 @@
 import { convertToJsonApiUrl } from '../utils/url-converter.js';
 import { httpClient } from '../utils/http-client.js';
 import { logger } from '../utils/logger.js';
+import { describeError } from '../utils/error-handler.js';
 
 /**
  * 解析的引用信息接口
@@ -88,7 +89,7 @@ export async function handleResolveReferencesBatch(
     return formatResolvedReferences(sourceUrl, resolvedReferences, data.metadata?.title);
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to resolve references: ${errorMessage}`;
   }
 }
@@ -253,7 +254,7 @@ function formatSingleReference(ref: ResolvedReference): string {
   if (ref.fragments && ref.fragments.length > 0) {
     const codeSignature = ref.fragments.map(f => f.text).join('');
     if (codeSignature.trim()) {
-      content += `\`\`\`swift\n${codeSignature}\`\`\`\n\n`;
+      content += `\`\`\`swift\n${codeSignature}\n\`\`\`\n\n`;
     }
   }
 

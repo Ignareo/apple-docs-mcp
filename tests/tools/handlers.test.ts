@@ -91,10 +91,10 @@ describe('Tool Handlers', () => {
     });
 
     it('should pass limit and search_scope to search_apple_docs', async () => {
-      const args = { query: 'SwiftUI', limit: 5, search_scope: 'ios' };
+      const args = { query: 'SwiftUI', limit: 5, search_scope: 'documentation' };
       const result = await handleToolCall('search_apple_docs', args, mockServer);
 
-      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 5, 'ios');
+      expect(mockServer.searchAppleDocs).toHaveBeenCalledWith('SwiftUI', 5, 'documentation');
       expect(result).toEqual({
         content: [{ type: 'text', text: 'Search results' }],
       });
@@ -131,13 +131,30 @@ describe('Tool Handlers', () => {
       expect(result.content[0].text).toContain('Validation failed: query is required');
     });
 
+    it('should render AppError objects without [object Object]', async () => {
+      (mockServer.getRelatedApis as jest.Mock).mockRejectedValueOnce({
+        type: 'API_ERROR',
+        message: 'Request failed with status 404',
+      });
+
+      const result = await handleToolCall(
+        'get_related_apis',
+        { apiUrl: 'https://developer.apple.com/documentation/missing' },
+        mockServer,
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toBe('Error: Request failed with status 404');
+      expect(result.content[0].text).not.toContain('[object Object]');
+    });
+
     it('should render Zod validation failures as a readable one-liner', async () => {
       // Real ZodError from the actual schema (limit out of range)
       const result = await handleToolCall('search_apple_docs', { query: 'SwiftUI', limit: 99 }, mockServer);
 
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toBe(
-        'Invalid arguments for search_apple_docs: limit: Too big: expected number to be <=30',
+        'Invalid arguments for search_apple_docs: limit: Too big: expected number to be <=20',
       );
       // forbidden: raw ZodError JSON dump
       expect(result.content[0].text).not.toContain('"origin"');
@@ -172,7 +189,7 @@ describe('Tool Handlers', () => {
       
       await handler(args, mockServer);
       
-      expect(mockServer.listTechnologies).toHaveBeenCalledWith('games', 'swift', false, 200);
+      expect(mockServer.listTechnologies).toHaveBeenCalledWith('games', 'swift', false, 10);
     });
 
     it('should handle list_technologies with limit parameter', async () => {

@@ -4,6 +4,7 @@ import { APPLE_URLS, API_LIMITS, PROCESSING_LIMITS } from '../utils/constants.js
 import { httpClient } from '../utils/http-client.js';
 import { logger } from '../utils/logger.js';
 import { normalizeFrameworkName } from '../utils/framework-mapper.js';
+import { describeError, describeToolError, isNotFoundError } from '../utils/error-handler.js';
 
 /**
  * MCP Tool Definition
@@ -197,7 +198,11 @@ export async function searchFrameworkSymbols(
     return result;
 
   } catch (error) {
-    return `Error searching classes: ${error instanceof Error ? error.message : String(error)}`;
+    const hint = isNotFoundError(error)
+      ? `framework "${framework}" not found; call list_technologies for valid identifiers`
+      : undefined;
+    logger.error(`Error searching symbols in ${framework} framework: ${describeError(error)}`);
+    return `Error: ${describeToolError('search_framework_symbols', error, hint)}`;
   }
 }
 

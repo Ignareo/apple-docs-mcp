@@ -1,6 +1,6 @@
 import { jest } from '@jest/globals';
 import { formatSearchResults, searchAppleDocs } from '../../src/tools/search-parser.js';
-import { parseJsonl, dedupeMerge } from '../../src/tools/search-api-client.js';
+import { clearSearchCache, parseJsonl, dedupeMerge } from '../../src/tools/search-api-client.js';
 import type { AppleSearchApiResult } from '../../src/types/search.js';
 
 // ---------------------------------------------------------------------------
@@ -108,6 +108,58 @@ describe('formatSearchResults', () => {
     expect(text).toContain('# Apple Documentation Search Results');
     expect(text).toContain('**Query:** "zzz no such api"');
     expect(text).toContain('No results.');
+  });
+
+  it('should render the result type when known', () => {
+    const text = formatSearchResults(
+      [{ ...results[0], type: 'symbol' }],
+      'uiview',
+    );
+
+    expect(text).toContain('- Type: symbol');
+  });
+
+  it('should not repeat a description that equals the title', () => {
+    const text = formatSearchResults(
+      [{ title: 'ScrollView', description: 'ScrollView', availability: '', hierarchy: '', permalink: '/swiftui/scrollview' }],
+      'scrollview',
+    );
+
+    expect(text.match(/- ScrollView/g)).toBeNull();
+    expect(text.match(/### 1\. ScrollView/g)).toHaveLength(1);
+  });
+
+  it('should warn about weak matches when no query term appears in the results', () => {
+    const text = formatSearchResults(results, 'zzz nonsensical query');
+
+    expect(text).toContain('Weak matches');
+  });
+
+  it('should not warn about weak matches for a matching query or a CJK query', () => {
+    expect(formatSearchResults(results, 'uikit view')).not.toContain('Weak matches');
+    // CJK queries are exempt: whitespace tokenization would produce false positives.
+    expect(formatSearchResults(results, '如何监听滚动位置')).not.toContain('Weak matches');
+  });
+
+  it('should render a partial-results warning instead of looking complete', () => {
+    const text = formatSearchResults(results, 'uikit view', {
+      partial: true,
+      partialReason: 'Partial results: the backend stream stalled for 15s; only 2 result(s) could be parsed and the result set may be incomplete.',
+    });
+
+    expect(text).toContain('> ⚠️ Partial results');
+    expect(text).toContain('may be incomplete');
+    expect(text).toContain('### 1. UIView');
+  });
+
+  it('should explain an empty partial result set', () => {
+    const text = formatSearchResults([], 'uikit view', {
+      partial: true,
+      partialReason: 'Partial results: the backend stream stalled for 15s; only 0 result(s) could be parsed and the result set may be incomplete.',
+    });
+
+    expect(text).toContain('No results could be recovered');
+    expect(text).toContain('Partial results');
   });
 });
 
@@ -244,6 +296,7 @@ describe('dedupeMerge', () => {
 describe('searchAppleDocs', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    clearSearchCache();
     // postQuery retries with exponential backoff; keep unit tests fast.
     process.env.SEARCH_API_RETRY_DELAY_MS = '1';
   });

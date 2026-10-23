@@ -20,9 +20,11 @@ export const listWWDCVideosSchema = z.object({
 export const searchWWDCContentSchema = z.object({
   query: z.string().min(1).describe('Search query'),
   searchIn: z.enum(['transcript', 'code', 'both']).default('both').describe('Where to search'),
-  year: z.string().optional().describe('Filter by WWDC year'),
-  language: z.string().optional().describe('Filter code by language'),
-  limit: z.number().min(1).max(100).default(20).describe('Maximum number of results'),
+  year: z.string().optional().describe('Filter by WWDC year (bundled snapshot: 2014-2025)'),
+  language: z.string().optional().describe('Filter code by language (bundled data: swift)'),
+  limit: z.number().min(1).max(100).default(10).describe('Maximum number of videos in the result set'),
+  snippetChars: z.number().min(1).max(2000).default(300).describe('Max characters per match snippet'),
+  matchesPerVideo: z.number().min(1).max(5).default(1).describe('Max matches shown per video'),
 });
 
 /**
@@ -33,6 +35,10 @@ export const getWWDCVideoSchema = z.object({
   videoId: z.string().describe('Video ID'),
   includeTranscript: z.boolean().default(true).describe('Include transcript'),
   includeCode: z.boolean().default(true).describe('Include code examples'),
+  maxTranscriptChars: z.number().min(0).max(200000).default(12000).describe('Transcript character budget (0 = unlimited)'),
+  query: z.string().optional().describe('Only return transcript lines containing this keyword (±1 line context)'),
+  includeResources: z.boolean().default(true).describe('Include resource links'),
+  includeRelatedVideos: z.boolean().default(true).describe('Include related videos'),
 });
 
 /**
@@ -41,9 +47,10 @@ export const getWWDCVideoSchema = z.object({
 export const getWWDCCodeExamplesSchema = z.object({
   framework: z.string().optional().describe('Filter by framework'),
   topic: z.string().optional().describe('Filter by topic'),
-  year: z.string().optional().describe('Filter by WWDC year'),
-  language: z.string().optional().describe('Filter by programming language'),
+  year: z.string().optional().describe('Filter by WWDC year (bundled snapshot: 2014-2025)'),
+  language: z.string().optional().describe('Filter by programming language (bundled data: swift)'),
   limit: z.number().min(1).max(100).default(30).describe('Maximum number of examples'),
+  maxCodeChars: z.number().min(0).max(20000).default(1500).describe('Max characters per code example (0 = unlimited)'),
 });
 
 /**

@@ -2,6 +2,7 @@ import { convertToJsonApiUrl } from '../utils/url-converter.js';
 import { httpClient } from '../utils/http-client.js';
 import { logger } from '../utils/logger.js';
 import { PROCESSING_LIMITS } from '../utils/constants.js';
+import { describeToolError } from '../utils/error-handler.js';
 
 /**
  * 平台兼容性信息接口
@@ -21,11 +22,8 @@ interface CompatibilityAnalysis {
   apiName: string;
   apiUrl: string;
   platforms: PlatformInfo[];
-  supportedPlatforms: string[];
-  betaPlatforms: string[];
-  deprecatedPlatforms: string[];
-  minVersions: Record<string, string>;
-  crossPlatformSupport: boolean;
+  /** Apple's migration sentence, when available. */
+  deprecationSummary?: string;
 }
 
 interface AppleDocData {
@@ -35,6 +33,7 @@ interface AppleDocData {
     symbolKind?: string;
     role?: string;
   };
+  deprecationSummary?: unknown[];
   topicSections?: Array<{
     title: string;
     identifiers: string[];
@@ -60,8 +59,7 @@ export async function handleGetPlatformCompatibility(
     }
 
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    return `Error: Failed to analyze platform compatibility: ${errorMessage}`;
+    return `Error: ${describeToolError('get_platform_compatibility', error)}`;
   }
 }
 
@@ -88,9 +86,10 @@ async function analyzeSingleApiCompatibility(
     data.metadata.title || 'Unknown API',
     apiUrl,
     data.metadata.platforms,
+    renderDeprecationSummary(data.deprecationSummary, data.references),
   );
 
-  let result = formatCompatibilityAnalysis(analysis);
+  let result = formatCompatibilityAnalysis(analysis, false);
 
   // 如果需要包含相关API的兼容性信息
   if (includeRelated && data.topicSections) {
@@ -107,15 +106,15 @@ async function analyzeSingleApiCompatibility(
 }
 
 /**
- * 分析框架的平台兼容性
+ * 框架级对比目前未实现。明确告知调用方（而不是伪装成框架分析），
+ * 然后回退到单 API 兼容性。
  */
 async function analyzeFrameworkCompatibility(
   frameworkUrl: string,
   includeRelated: boolean,
 ): Promise<string> {
-  // 这里可以扩展为分析整个框架的兼容性
-  // 暂时使用单API分析作为基础
-  return await analyzeSingleApiCompatibility(frameworkUrl, includeRelated || true);
+  const note = '> **Note:** compareMode "framework" is not supported. Showing single-API compatibility instead.\n\n';
+  return note + await analyzeSingleApiCompatibility(frameworkUrl, includeRelated);
 }
 
 /**
@@ -159,6 +158,7 @@ async function analyzeRelatedCompatibility(
               ref.title || 'Unknown',
               relatedUrl,
               relatedData.metadata.platforms,
+              renderDeprecationSummary(relatedData.deprecationSummary, relatedData.references),
             );
             analyses.push(analysis);
             count++;
@@ -181,37 +181,13 @@ function analyzeCompatibility(
   apiName: string,
   apiUrl: string,
   platforms: PlatformInfo[],
+  deprecationSummary?: string,
 ): CompatibilityAnalysis {
-  const supportedPlatforms: string[] = [];
-  const betaPlatforms: string[] = [];
-  const deprecatedPlatforms: string[] = [];
-  const minVersions: Record<string, string> = {};
-
-  for (const platform of platforms) {
-    supportedPlatforms.push(platform.name);
-
-    if (platform.beta) {
-      betaPlatforms.push(platform.name);
-    }
-
-    if (platform.deprecated) {
-      deprecatedPlatforms.push(platform.name);
-    }
-
-    if (platform.introducedAt) {
-      minVersions[platform.name] = platform.introducedAt;
-    }
-  }
-
   return {
     apiName,
     apiUrl,
     platforms,
-    supportedPlatforms,
-    betaPlatforms,
-    deprecatedPlatforms,
-    minVersions,
-    crossPlatformSupport: supportedPlatforms.length > 1,
+    deprecationSummary,
   };
 }
 
@@ -220,94 +196,95 @@ function analyzeCompatibility(
 /**
  * 格式化兼容性分析结果
  */
-function formatCompatibilityAnalysis(analysis: CompatibilityAnalysis, isRelated: boolean = false): string {
+function formatCompatibilityAnalysis(
+  analysis: CompatibilityAnalysis,
+  isRelated: boolean = false,
+): string {
   const prefix = isRelated ? '### ' : '# ';
-  let content = `${prefix}Platform Compatibility: ${analysis.apiName}\n\n`;
+  let content = `${prefix}Platform Compatibility: [${analysis.apiName}](${analysis.apiUrl})\n\n`;
 
-  if (!isRelated) {
-    content += `**API:** [${analysis.apiUrl}](${analysis.apiUrl})\n\n`;
-  }
-
-  // 平台支持概览
-  content += '## Platform Support Summary\n\n';
-  content += `**Supported Platforms:** ${analysis.supportedPlatforms.join(', ')}\n`;
-  content += `**Cross-Platform:** ${analysis.crossPlatformSupport ? 'Yes' : 'No'}\n`;
-
-  if (analysis.betaPlatforms.length > 0) {
-    content += `**Beta Platforms:** ${analysis.betaPlatforms.join(', ')}\n`;
-  }
-
-  if (analysis.deprecatedPlatforms.length > 0) {
-    content += `**Deprecated Platforms:** ${analysis.deprecatedPlatforms.join(', ')}\n`;
-  }
-
-  content += '\n';
-
-  // 详细平台信息
-  content += '## Detailed Platform Information\n\n';
+  content += '| Platform | Introduced | Deprecated | Notes |\n';
+  content += '|---|---|---|---|\n';
 
   for (const platform of analysis.platforms) {
-    content += `**${platform.name}**\n`;
-
-    if (platform.introducedAt) {
-      content += `- Introduced: ${platform.introducedAt}\n`;
-    }
-
-    if (platform.deprecatedAt) {
-      content += `- Deprecated: ${platform.deprecatedAt}\n`;
-    }
-
-    if (platform.obsoletedAt) {
-      content += `- Obsoleted: ${platform.obsoletedAt}\n`;
-    }
-
-    const status = [];
-    if (platform.beta) {
-      status.push('Beta');
-    }
-    if (platform.deprecated) {
-      status.push('Deprecated');
-    }
-    if (platform.unavailable) {
-      status.push('Unavailable');
-    }
-
-    if (status.length > 0) {
-      content += `- Status: ${status.join(', ')}\n`;
-    }
-
-    if (platform.message) {
-      content += `- Note: ${platform.message}\n`;
-    }
-
-    content += '\n';
+    const introduced = platform.introducedAt || '-';
+    const deprecated = platform.deprecatedAt || (platform.deprecated ? 'Yes' : '-');
+    content += `| ${platform.name} | ${introduced} | ${deprecated} | ${formatPlatformNotes(platform)} |\n`;
   }
 
-  // 兼容性建议
-  content += '## Compatibility Recommendations\n\n';
-
-  if (analysis.crossPlatformSupport) {
-    content += `✅ **Cross-platform compatible** - This API works across ${analysis.supportedPlatforms.length} platforms\n\n`;
-  } else {
-    content += `⚠️ **Platform-specific** - This API is only available on ${analysis.supportedPlatforms[0]}\n\n`;
-  }
-
-  if (analysis.betaPlatforms.length > 0) {
-    content += '🚧 **Beta platforms** - Some platforms are in beta, expect changes\n\n';
-  }
-
-  if (analysis.deprecatedPlatforms.length > 0) {
-    content += '⚠️ **Deprecated platforms** - Consider migration plans for deprecated platforms\n\n';
-  }
-
-  // 最低版本要求
-  if (Object.keys(analysis.minVersions).length > 0) {
-    content += '## Minimum Version Requirements\n\n';
-    for (const [platform, version] of Object.entries(analysis.minVersions)) {
-      content += `- **${platform}:** ${version}+\n`;
-    }
-    content += '\n';
+  const deprecation = getDeprecationInfo(analysis.platforms, analysis.deprecationSummary);
+  if (deprecation.deprecated) {
+    content += `\n⚠️ **Deprecated**${deprecation.summary ? ` — ${deprecation.summary}` : ''}\n`;
   }
 
   return content;
+}
+
+/**
+ * 平台备注：只保留有意义的状态，避免重复版本信息。
+ */
+function formatPlatformNotes(platform: PlatformInfo): string {
+  const notes: string[] = [];
+  if (platform.unavailable) {
+    notes.push('Unavailable');
+  }
+  if (platform.beta) {
+    notes.push('Beta');
+  }
+  if (platform.obsoletedAt) {
+    notes.push(`Obsoleted ${platform.obsoletedAt}`);
+  }
+  return notes.length > 0 ? notes.join(', ') : '-';
+}
+
+/**
+ * 通过 deprecatedAt（Apple 实际使用的字段）判断废弃状态，并取迁移说明。
+ */
+function getDeprecationInfo(
+  platforms: PlatformInfo[],
+  summary?: string,
+): { deprecated: boolean; summary?: string } {
+  const deprecated = platforms.some(platform =>
+    Boolean(platform.deprecatedAt || platform.deprecated || platform.obsoletedAt),
+  );
+  const platformMessage = platforms.map(platform => platform.message).find(message => Boolean(message));
+  return { deprecated, summary: summary || platformMessage };
+}
+
+/**
+ * 将 Apple 的 deprecationSummary 渲染为一行纯文本（引用解析为名称）。
+ */
+function renderDeprecationSummary(
+  summary: unknown[] | undefined,
+  references?: Record<string, any>,
+): string | undefined {
+  if (!Array.isArray(summary)) {
+    return undefined;
+  }
+
+  const parts: string[] = [];
+  for (const block of summary) {
+    const paragraph = block as { inlineContent?: unknown[]; text?: string };
+    if (Array.isArray(paragraph.inlineContent)) {
+      parts.push(paragraph.inlineContent.map(node => renderInlineNode(node, references)).join(''));
+    } else if (typeof paragraph.text === 'string') {
+      parts.push(paragraph.text);
+    }
+  }
+
+  const text = parts.join(' ').replace(/\s+/g, ' ').trim();
+  return text.length > 0 ? text : undefined;
+}
+
+function renderInlineNode(node: unknown, references?: Record<string, any>): string {
+  const inline = node as { type?: string; text?: string; identifier?: string };
+  if (inline.type === 'reference' && inline.identifier) {
+    const refTitle = references?.[inline.identifier]?.title;
+    if (typeof refTitle === 'string' && refTitle.length > 0) {
+      return refTitle;
+    }
+    const segments = inline.identifier.split('/');
+    return segments[segments.length - 1] || '';
+  }
+  return typeof inline.text === 'string' ? inline.text : '';
 }

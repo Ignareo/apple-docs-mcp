@@ -6,6 +6,7 @@ import { JSDOM } from 'jsdom';
 import { httpClient } from '../../utils/http-client.js';
 import { logger } from '../../utils/logger.js';
 import { WWDC_URLS } from '../../utils/constants.js';
+import { describeError } from '../../utils/error-handler.js';
 
 export interface Topic {
   id: string;           // URL slug, e.g., "accessibility-inclusion"
@@ -99,7 +100,7 @@ export async function extractAllTopics(): Promise<Topic[]> {
 
   } catch (error) {
     logger.error('Failed to extract topic categories:', error);
-    throw new Error(`Failed to extract topics: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Failed to extract topics: ${describeError(error)}`);
   }
 }
 

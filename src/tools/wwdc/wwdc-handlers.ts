@@ -2,14 +2,179 @@
  * WWDC Video MCP Tool Handlers
  */
 
-import type { WWDCVideo } from '../../types/wwdc.js';
+import type { GlobalMetadata, TranscriptData, WWDCVideo } from '../../types/wwdc.js';
 import { logger } from '../../utils/logger.js';
+import { describeError } from '../../utils/error-handler.js';
 import {
   loadGlobalMetadata,
   loadTopicIndex,
   loadYearIndex,
   loadVideoData,
 } from '../../utils/wwdc-data-source.js';
+
+/** Default output budgets (characters) for the WWDC tool family. */
+const DEFAULT_SEARCH_LIMIT = 10;
+const DEFAULT_SNIPPET_CHARS = 300;
+const DEFAULT_TRANSCRIPT_CHARS = 12000;
+const DEFAULT_CODE_EXAMPLE_CHARS = 1500;
+/**
+ * Total code budget for `get_wwdc_video`. A single session can carry 70+ code
+ * examples (measured: 179 KB before capping); per-example caps alone do not
+ * bound the response, so the whole section is budgeted too.
+ */
+const DEFAULT_VIDEO_CODE_BUDGET_CHARS = 8000;
+
+/**
+ * Code languages present in the bundled WWDC snapshot.
+ * Verified against data/wwdc/videos: all 5,947 code examples are Swift.
+ */
+const SUPPORTED_CODE_LANGUAGES = ['swift'];
+
+/** Extra budget knobs for search_wwdc_content. */
+export interface SearchBudgetOptions {
+  snippetChars?: number;
+  matchesPerVideo?: number;
+}
+
+/** Extra budget knobs for get_wwdc_video. */
+export interface VideoDetailOptions {
+  maxTranscriptChars?: number;
+  query?: string;
+  includeResources?: boolean;
+  includeRelatedVideos?: boolean;
+}
+
+/** Extra budget knobs for get_wwdc_code_examples. */
+export interface CodeExamplesOptions {
+  maxCodeChars?: number;
+}
+
+/**
+ * Truncate text to a character budget and report whether a marker is needed.
+ * A non-positive budget means "unlimited".
+ */
+function truncateWithMarker(
+  text: string,
+  maxChars: number,
+  label: string,
+): { text: string; marker?: string } {
+  if (maxChars <= 0 || text.length <= maxChars) {
+    return { text };
+  }
+  return {
+    text: text.slice(0, maxChars),
+    marker: `[${label} truncated: showing ${maxChars} of ${text.length} chars]`,
+  };
+}
+
+/**
+ * One-line disclosure of the bundled data snapshot, e.g.
+ * `Snapshot: 2025-07-18 · 2014–2025 · 1,266 sessions`.
+ */
+function formatSnapshot(metadata: GlobalMetadata): string {
+  const years = [...(metadata.years ?? [])].sort();
+  const range = years.length > 0 ? `${years[0]}–${years[years.length - 1]}` : 'n/a';
+  const date = (metadata.lastUpdated || 'unknown').slice(0, 10);
+  const sessions = typeof metadata.totalVideos === 'number'
+    ? metadata.totalVideos.toLocaleString('en-US')
+    : '0';
+  return `Snapshot: ${date} · ${range} · ${sessions} sessions`;
+}
+
+/** Topic IDs that can be used for exact filtering. */
+function validTopicIds(metadata: GlobalMetadata): string[] {
+  const ids = new Set<string>();
+  (metadata.topics ?? []).forEach(topic => ids.add(topic.id));
+  Object.keys(metadata.statistics?.byTopic ?? {}).forEach(id => ids.add(id));
+  return [...ids].sort();
+}
+
+/** Validate a year filter against the bundled year index. */
+function validateYearFilter(metadata: GlobalMetadata, year?: string): string | null {
+  if (!year || year === 'all') {
+    return null;
+  }
+  const years = [...(metadata.years ?? [])].sort((a, b) => b.localeCompare(a));
+  if (years.includes(year)) {
+    return null;
+  }
+  return `Error: Unknown WWDC year "${year}". Valid years: ${years.join(', ')}. ${formatSnapshot(metadata)}. Run list_wwdc_years for details.`;
+}
+
+/**
+ * Validate a topic filter. Plain keywords (no hyphen) are intentionally allowed
+ * for title/topic keyword search; values shaped like a topic ID must exist.
+ */
+function validateTopicFilter(metadata: GlobalMetadata, topic?: string): string | null {
+  if (!topic || !topic.includes('-')) {
+    return null;
+  }
+  const ids = validTopicIds(metadata);
+  if (ids.includes(topic)) {
+    return null;
+  }
+  return `Error: Unknown WWDC topic "${topic}". Valid topics: ${ids.join(', ')}. ${formatSnapshot(metadata)}. Run browse_wwdc_topics for details.`;
+}
+
+/** Validate a code language filter against the bundled code-example data. */
+function validateLanguageFilter(metadata: GlobalMetadata, language?: string): string | null {
+  if (!language) {
+    return null;
+  }
+  if (SUPPORTED_CODE_LANGUAGES.includes(language.toLowerCase())) {
+    return null;
+  }
+  return `Error: Unknown code language "${language}". Valid languages: ${SUPPORTED_CODE_LANGUAGES.join(', ')}. ${formatSnapshot(metadata)}.`;
+}
+
+/** Extract transcript text, preferring fullText but falling back to segments. */
+function transcriptText(transcript: TranscriptData): string {
+  if (transcript.fullText && transcript.fullText.trim().length > 0) {
+    return transcript.fullText;
+  }
+  if (transcript.segments.length === 0) {
+    return '';
+  }
+  return transcript.segments
+    .map(segment => `**${segment.timestamp}**\n${segment.text}`)
+    .join('\n\n');
+}
+
+/**
+ * Return only the transcript lines containing `query` (±1 line of context),
+ * joining non-contiguous blocks with an ellipsis line.
+ */
+function extractKeywordWindows(
+  fullText: string,
+  query: string,
+): { text: string; matchingLines: number; totalLines: number } {
+  const lines = fullText.split('\n');
+  const queryLower = query.toLowerCase();
+  const keep = new Set<number>();
+  let matchingLines = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].toLowerCase().includes(queryLower)) {
+      matchingLines++;
+      keep.add(i - 1);
+      keep.add(i);
+      keep.add(i + 1);
+    }
+  }
+
+  const sorted = [...keep].filter(i => i >= 0 && i < lines.length).sort((a, b) => a - b);
+  const blocks: string[] = [];
+  let previous = -2;
+  for (const index of sorted) {
+    if (index > previous + 1 && blocks.length > 0) {
+      blocks.push('...');
+    }
+    blocks.push(lines[index]);
+    previous = index;
+  }
+
+  return { text: blocks.join('\n'), matchingLines, totalLines: lines.length };
+}
 
 /**
  * Helper function to load multiple video data files
@@ -45,6 +210,13 @@ export async function handleListWWDCVideos(
   try {
     // Load metadata
     const metadata = await loadGlobalMetadata();
+
+    // Reject filters that can never match the bundled snapshot instead of
+    // silently reporting "no videos found".
+    const validationError = validateYearFilter(metadata, year) ?? validateTopicFilter(metadata, topic);
+    if (validationError) {
+      return validationError;
+    }
 
     let allVideos: Array<WWDCVideo & { year: string }> = [];
 
@@ -119,14 +291,15 @@ export async function handleListWWDCVideos(
     }
 
     // Apply limit
+    const totalCount = filteredVideos.length;
     const limitedVideos = filteredVideos.slice(0, limit);
 
     // Format output
-    return formatVideoList(limitedVideos, year, topic, hasCode);
+    return formatVideoList(limitedVideos, totalCount, year, topic, hasCode);
 
   } catch (error) {
     logger.error('Failed to list WWDC videos:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to list WWDC videos: ${errorMessage}`;
   }
 }
@@ -139,15 +312,29 @@ export async function handleSearchWWDCContent(
   searchIn: 'transcript' | 'code' | 'both' = 'both',
   year?: string,
   language?: string,
-  limit: number = 20,
+  limit: number = DEFAULT_SEARCH_LIMIT,
+  options: SearchBudgetOptions = {},
 ): Promise<string> {
   try {
     const metadata = await loadGlobalMetadata();
     const queryLower = query.toLowerCase();
+    const snippetChars = options.snippetChars ?? DEFAULT_SNIPPET_CHARS;
+    const matchesPerVideo = options.matchesPerVideo ?? 1;
     const results: Array<{
       video: WWDCVideo & { year: string };
       matches: Array<{ type: 'transcript' | 'code'; context: string; timestamp?: string }>;
+      matchCount: number;
     }> = [];
+
+    // Reject filters that can never match the bundled snapshot instead of
+    // silently reporting "no content found".
+    const validationError = validateYearFilter(metadata, year)
+      ?? validateLanguageFilter(metadata, language);
+    if (validationError) {
+      return validationError;
+    }
+
+    let totalMatches = 0;
 
     // Determine years to search
     const yearsToSearch = year ? [year] : metadata.years;
@@ -181,7 +368,11 @@ export async function handleSearchWWDCContent(
 
           // Search transcript
           if ((searchIn === 'transcript' || searchIn === 'both') && video.transcript) {
-            const transcriptMatches = searchInTranscript(video.transcript.fullText, queryLower);
+            const transcriptMatches = searchInTranscript(
+              video.transcript.fullText,
+              queryLower,
+              snippetChars,
+            );
             matches.push(...transcriptMatches.map(m => ({
               type: 'transcript' as const,
               context: m.context,
@@ -191,7 +382,7 @@ export async function handleSearchWWDCContent(
 
           // Search code
           if ((searchIn === 'code' || searchIn === 'both') && video.codeExamples) {
-            const codeMatches = searchInCode(video.codeExamples, queryLower, language);
+            const codeMatches = searchInCode(video.codeExamples, queryLower, language, snippetChars);
             matches.push(...codeMatches.map(m => ({
               type: 'code' as const,
               context: m.context,
@@ -200,9 +391,11 @@ export async function handleSearchWWDCContent(
           }
 
           if (matches.length > 0) {
+            totalMatches += matches.length;
             results.push({
               video: { ...video, year: y },
-              matches: matches.slice(0, 3), // Max 3 matches per video
+              matches: matches.slice(0, matchesPerVideo),
+              matchCount: matches.length,
             });
           }
         }
@@ -211,17 +404,18 @@ export async function handleSearchWWDCContent(
       }
     }
 
-    // Sort by match count
-    results.sort((a, b) => b.matches.length - a.matches.length);
+    // Sort by the full match count (not the displayed subset)
+    results.sort((a, b) => b.matchCount - a.matchCount);
 
     // Apply limit
     const limitedResults = results.slice(0, limit);
+    const shownMatches = limitedResults.reduce((sum, result) => sum + result.matches.length, 0);
 
-    return formatSearchResults(limitedResults, query, searchIn);
+    return formatSearchResults(limitedResults, query, searchIn, totalMatches, shownMatches);
 
   } catch (error) {
     logger.error('Failed to search WWDC content:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to search WWDC content: ${errorMessage}`;
   }
 }
@@ -234,16 +428,17 @@ export async function handleGetWWDCVideo(
   videoId: string,
   includeTranscript: boolean = true,
   includeCode: boolean = true,
+  options: VideoDetailOptions = {},
 ): Promise<string> {
   try {
     // Load video data directly
     const video = await loadVideoData(year, videoId);
 
-    return formatVideoDetail(video, includeTranscript, includeCode);
+    return formatVideoDetail(video, includeTranscript, includeCode, options);
 
   } catch (error) {
     logger.error('Failed to get WWDC video:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to get WWDC video: ${errorMessage}`;
   }
 }
@@ -257,9 +452,11 @@ export async function handleGetWWDCCodeExamples(
   year?: string,
   language?: string,
   limit: number = 30,
+  options: CodeExamplesOptions = {},
 ): Promise<string> {
   try {
     const metadata = await loadGlobalMetadata();
+    const maxCodeChars = options.maxCodeChars ?? DEFAULT_CODE_EXAMPLE_CHARS;
     const codeExamples: Array<{
       code: string;
       language: string;
@@ -269,6 +466,15 @@ export async function handleGetWWDCCodeExamples(
       videoUrl: string;
       year: string;
     }> = [];
+
+    // Reject filters that can never match the bundled snapshot instead of
+    // silently reporting "no code examples found".
+    const validationError = validateYearFilter(metadata, year)
+      ?? validateTopicFilter(metadata, topic)
+      ?? validateLanguageFilter(metadata, language);
+    if (validationError) {
+      return validationError;
+    }
 
     // Determine years to search
     const yearsToSearch = year ? [year] : metadata.years;
@@ -349,13 +555,21 @@ export async function handleGetWWDCCodeExamples(
     }
 
     // Limit result count
+    const totalExamples = codeExamples.length;
     const limitedExamples = codeExamples.slice(0, limit);
 
-    return formatCodeExamples(limitedExamples, framework, topic, language);
+    return formatCodeExamples(
+      limitedExamples,
+      totalExamples,
+      framework,
+      topic,
+      language,
+      maxCodeChars,
+    );
 
   } catch (error) {
     logger.error('Failed to get WWDC code examples:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to get WWDC code examples: ${errorMessage}`;
   }
 }
@@ -366,6 +580,7 @@ export async function handleGetWWDCCodeExamples(
 function searchInTranscript(
   fullText: string,
   query: string,
+  snippetChars: number = DEFAULT_SNIPPET_CHARS,
 ): Array<{ context: string; timestamp?: string }> {
   const matches: Array<{ context: string; timestamp?: string }> = [];
   const lines = fullText.split('\n');
@@ -374,13 +589,14 @@ function searchInTranscript(
     const line = lines[i];
     if (line.toLowerCase().includes(query)) {
       // Get context (one line before and after)
-      const context = [
+      const rawContext = [
         lines[i - 1] || '',
         line,
         lines[i + 1] || '',
       ].filter(l => l.trim()).join(' ... ');
 
-      matches.push({ context });
+      const { text, marker } = truncateWithMarker(rawContext, snippetChars, 'snippet');
+      matches.push({ context: marker ? `${text} ${marker}` : text });
     }
   }
 
@@ -394,6 +610,7 @@ function searchInCode(
   codeExamples: Array<{ code: string; language: string; timestamp?: string; title?: string }>,
   query: string,
   language?: string,
+  snippetChars: number = DEFAULT_SNIPPET_CHARS,
 ): Array<{ context: string; timestamp?: string }> {
   const matches: Array<{ context: string; timestamp?: string }> = [];
 
@@ -408,8 +625,10 @@ function searchInCode(
       const lines = example.code.split('\n');
       const matchingLines = lines.filter(line => line.toLowerCase().includes(query));
 
+      const rawContext = `[${example.language}] ${example.title || ''}: ${matchingLines[0]}`;
+      const { text, marker } = truncateWithMarker(rawContext, snippetChars, 'snippet');
       matches.push({
-        context: `[${example.language}] ${example.title || ''}: ${matchingLines[0]}`,
+        context: marker ? `${text} ${marker}` : text,
         timestamp: example.timestamp,
       });
     }
@@ -423,6 +642,7 @@ function searchInCode(
  */
 function formatVideoList(
   videos: Array<WWDCVideo & { year: string }>,
+  totalCount: number,
   year?: string,
   topic?: string,
   hasCode?: boolean,
@@ -449,7 +669,7 @@ function formatVideoList(
     content += `**Filter Conditions:** ${filters.join(', ')}\n\n`;
   }
 
-  content += `**Found ${videos.length} videos**\n\n`;
+  content += `**Showing ${videos.length} of ${totalCount} videos**\n\n`;
 
   // Group by year
   const videosByYear = videos.reduce((acc, video) => {
@@ -470,6 +690,7 @@ function formatVideoList(
         content += `### [${video.title}](${video.url})\n`;
 
         const metadata: string[] = [];
+        metadata.push(`videoId: ${video.id}`);
         if (video.duration) {
           metadata.push(`Duration: ${video.duration}`);
         }
@@ -508,14 +729,17 @@ function formatSearchResults(
   }>,
   query: string,
   searchIn: string,
+  totalMatches: number,
+  shownMatches: number,
 ): string {
   if (results.length === 0) {
-    return `No ${searchIn === 'code' ? 'code' : searchIn === 'transcript' ? 'transcript' : 'content'} found containing "${query}".`;
+    return `No content found containing "${query}".`;
   }
 
   let content = '# WWDC Content Search Results\n\n';
   content += `**Search Query:** "${query}"\n`;
   content += `**Search Scope:** ${searchIn === 'code' ? 'Code' : searchIn === 'transcript' ? 'Transcript' : 'All Content'}\n`;
+  content += `**Total matches: ${totalMatches} (showing ${shownMatches})**\n`;
   content += `**Found ${results.length} related videos**\n\n`;
 
   results.forEach(result => {
@@ -542,7 +766,13 @@ function formatVideoDetail(
   video: WWDCVideo,
   includeTranscript: boolean,
   includeCode: boolean,
+  options: VideoDetailOptions = {},
 ): string {
+  const maxTranscriptChars = options.maxTranscriptChars ?? DEFAULT_TRANSCRIPT_CHARS;
+  const query = options.query?.trim();
+  const includeResources = options.includeResources ?? true;
+  const includeRelatedVideos = options.includeRelatedVideos ?? true;
+
   let content = `# ${video.title}\n\n`;
   content += `**WWDC${video.year}** | [Watch Video](${video.url})\n\n`;
 
@@ -558,7 +788,7 @@ function formatVideoDetail(
   }
 
   // Resource links
-  if (video.resources.hdVideo || video.resources.sdVideo || video.resources.resourceLinks) {
+  if (includeResources && (video.resources.hdVideo || video.resources.sdVideo || video.resources.resourceLinks)) {
     content += '\n**Resources:**\n';
     if (video.resources.hdVideo) {
       content += `- [HD Video](${video.resources.hdVideo})\n`;
@@ -584,16 +814,33 @@ function formatVideoDetail(
   // Transcript
   if (includeTranscript && video.transcript) {
     content += '\n## Transcript\n\n';
+    const fullTranscript = transcriptText(video.transcript);
 
-    // If there are timestamped segments, use them
-    if (video.transcript.segments.length > 0) {
-      video.transcript.segments.forEach(segment => {
-        content += `**${segment.timestamp}**\n`;
-        content += `${segment.text}\n\n`;
-      });
+    if (!fullTranscript.trim()) {
+      content += 'No transcript available.\n';
     } else {
-      // Show full transcript text
-      content += video.transcript.fullText;
+      let transcriptBody = fullTranscript;
+      let matchedKeyword = false;
+
+      if (query) {
+        const windowed = extractKeywordWindows(fullTranscript, query);
+        if (windowed.matchingLines === 0) {
+          content += `No transcript lines matched "${query}".\n`;
+        } else {
+          matchedKeyword = true;
+          content += `*Keyword filter: "${query}" (${windowed.matchingLines} matching lines of ${windowed.totalLines})*\n\n`;
+          transcriptBody = windowed.text;
+        }
+      }
+
+      if (!query || matchedKeyword) {
+        if (maxTranscriptChars > 0 && transcriptBody.length > maxTranscriptChars) {
+          content += transcriptBody.slice(0, maxTranscriptChars);
+          content += `\n\n[transcript truncated: showing ${maxTranscriptChars} of ${fullTranscript.length} chars — pass query or raise maxTranscriptChars]`;
+        } else {
+          content += transcriptBody;
+        }
+      }
     }
   }
 
@@ -601,7 +848,15 @@ function formatVideoDetail(
   if (includeCode && video.codeExamples && video.codeExamples.length > 0) {
     content += '\n## Code Examples\n\n';
 
-    video.codeExamples.forEach((example, index) => {
+    let codeBudget = DEFAULT_VIDEO_CODE_BUDGET_CHARS;
+    let shownExamples = 0;
+
+    for (let index = 0; index < video.codeExamples.length; index++) {
+      const example = video.codeExamples[index];
+      if (codeBudget <= 0) {
+        break;
+      }
+
       if (example.title) {
         content += `### ${example.title}`;
       } else {
@@ -613,18 +868,33 @@ function formatVideoDetail(
       }
       content += '\n\n';
 
+      const cappedCode = truncateWithMarker(
+        example.code,
+        Math.min(DEFAULT_CODE_EXAMPLE_CHARS, codeBudget),
+        'code example',
+      );
       content += `\`\`\`${example.language}\n`;
-      content += example.code;
+      content += cappedCode.text;
       content += '\n\`\`\`\n\n';
+      codeBudget -= cappedCode.text.length;
+
+      if (cappedCode.marker) {
+        content += `*${cappedCode.marker}*\n\n`;
+      }
 
       if (example.context) {
         content += `*${example.context}*\n\n`;
       }
-    });
+      shownExamples++;
+    }
+
+    if (shownExamples < video.codeExamples.length) {
+      content += `*[code examples truncated: showing ${shownExamples} of ${video.codeExamples.length} — call get_wwdc_code_examples with a framework/topic filter for the rest]*\n`;
+    }
   }
 
   // Related videos
-  if (video.relatedVideos && video.relatedVideos.length > 0) {
+  if (includeRelatedVideos && video.relatedVideos && video.relatedVideos.length > 0) {
     content += '\n## Related Videos\n\n';
     video.relatedVideos.forEach(related => {
       content += `- [${related.title}](${related.url}) (WWDC${related.year})\n`;
@@ -647,9 +917,11 @@ function formatCodeExamples(
     videoUrl: string;
     year: string;
   }>,
+  totalExamples: number,
   framework?: string,
   topic?: string,
   language?: string,
+  maxCodeChars: number = DEFAULT_CODE_EXAMPLE_CHARS,
 ): string {
   if (examples.length === 0) {
     return 'No code examples found matching the criteria.';
@@ -673,7 +945,7 @@ function formatCodeExamples(
     content += `**Filter Conditions:** ${filters.join(', ')}\n\n`;
   }
 
-  content += `**Found ${examples.length} code examples**\n\n`;
+  content += `**Total examples: ${totalExamples} (showing ${examples.length})**\n\n`;
 
   // Group by language
   const examplesByLanguage = examples.reduce((acc, ex) => {
@@ -696,9 +968,14 @@ function formatCodeExamples(
       }
       content += '\n\n';
 
+      const cappedCode = truncateWithMarker(example.code, maxCodeChars, 'code example');
       content += `\`\`\`${example.language}\n`;
-      content += example.code;
+      content += cappedCode.text;
       content += '\n\`\`\`\n\n';
+
+      if (cappedCode.marker) {
+        content += `*${cappedCode.marker}*\n\n`;
+      }
     });
   });
 
@@ -716,6 +993,11 @@ export async function handleBrowseWWDCTopics(
 ): Promise<string> {
   try {
     const metadata = await loadGlobalMetadata();
+
+    const yearError = validateYearFilter(metadata, year);
+    if (yearError) {
+      return yearError;
+    }
 
     if (!topicId) {
       // List all available topics
@@ -741,7 +1023,7 @@ export async function handleBrowseWWDCTopics(
     // Browse specific topic
     const topic = metadata.topics.find(t => t.id === topicId);
     if (!topic) {
-      return `Topic "${topicId}" not found. Available topics: ${metadata.topics.map(t => t.id).join(', ')}`;
+      return `Error: Unknown WWDC topic "${topicId}". Valid topics: ${validTopicIds(metadata).join(', ')}. ${formatSnapshot(metadata)}.`;
     }
 
     let content = `# ${topic.name}\n\n`;
@@ -803,7 +1085,7 @@ export async function handleBrowseWWDCTopics(
         }
 
       } catch (error) {
-        content += `Error loading videos for topic: ${error instanceof Error ? error.message : String(error)}\n`;
+        content += `Error loading videos for topic: ${describeError(error)}\n`;
       }
     }
 
@@ -811,7 +1093,7 @@ export async function handleBrowseWWDCTopics(
 
   } catch (error) {
     logger.error('Failed to browse WWDC topics:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to browse WWDC topics: ${errorMessage}`;
   }
 }
@@ -980,7 +1262,7 @@ export async function handleFindRelatedWWDCVideos(
 
   } catch (error) {
     logger.error('Failed to find related WWDC videos:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to find related WWDC videos: ${errorMessage}`;
   }
 }
@@ -999,6 +1281,9 @@ export async function handleListWWDCYears(): Promise<string> {
     if (!metadata.years || metadata.years.length === 0) {
       return 'No WWDC years available.';
     }
+
+    // Disclose the bundled snapshot so callers know how current the data is.
+    content += `${formatSnapshot(metadata)}\n\n`;
 
     // Sort years in descending order (newest first)
     const sortedYears = [...metadata.years].sort((a, b) => b.localeCompare(a));
@@ -1027,7 +1312,7 @@ export async function handleListWWDCYears(): Promise<string> {
 
   } catch (error) {
     logger.error('Failed to list WWDC years:', error);
-    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorMessage = describeError(error);
     return `Error: Failed to list WWDC years: ${errorMessage}`;
   }
 }

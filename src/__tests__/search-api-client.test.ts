@@ -24,10 +24,15 @@
 
 import {
   API_URL,
+  clearSearchCache,
   dedupeMerge,
+  normalizeSearchResult,
   parseJsonl,
   postQuery,
+  resolveSearchScope,
   searchAppleDocsApi,
+  searchAppleDocsApiDetailed,
+  SEARCH_SCOPES,
 } from '../tools/search-api-client.js';
 import { formatSearchResults, searchAppleDocs, searchAppleDocsTool } from '../tools/search-parser.js';
 import { UserAgentPool } from '../utils/user-agent-pool.js';
@@ -168,6 +173,9 @@ function jsonlResponse(body: string, status = 200): Response {
 
 beforeEach(() => {
   mockFetch.mockReset();
+  // Successful searches are cached for 10 minutes in the product code; tests
+  // reuse query strings, so start every test with an empty cache.
+  clearSearchCache();
   // Keep retry backoff negligible in unit tests (postQuery reads these per call).
   process.env.SEARCH_API_RETRY_DELAY_MS = '1';
 });
@@ -468,6 +476,195 @@ describe('postQuery: retries and User-Agent pool feedback', () => {
     mockFetch.mockResolvedValue(jsonlResponse('Server Error', 500));
 
     await expect(postQuery('UIKit button')).rejects.toThrow(/HTTP 500/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// 6. metadata shapes: developer / webPage / pdf results must not render blank
+// ---------------------------------------------------------------------------
+
+describe('metadata shape normalization', () => {
+  it('renders developer (WWDC) items via titles/permalinks/itemTypes', () => {
+    const metadata: AppleSearchMetadata = {
+      metadataKind: 'developer',
+      titles: ['What’s new in SwiftUI'],
+      permalinks: ['https://developer.apple.com/videos/play/wwdc2025/256'],
+      descriptions: ['Join us for a tour of SwiftUI.'],
+      itemTypes: ['Video'],
+      projectNames: ['WWDC25'],
+    };
+
+    const merged = dedupeMerge([], [{ value: { metadata } }], 5);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      title: 'What’s new in SwiftUI',
+      permalink: 'https://developer.apple.com/videos/play/wwdc2025/256',
+      type: 'Video',
+      hierarchy: 'WWDC25',
+      description: 'Join us for a tour of SwiftUI.',
+    });
+  });
+
+  it('renders webPage items via sourceURL and falls back to the URL slug', () => {
+    const normalized = normalizeSearchResult({
+      metadataKind: 'webPage',
+      title: 'SwiftUI',
+      sourceURL: 'https://developer.apple.com/swiftui/',
+      description: 'Build interfaces declaratively.',
+    });
+
+    expect(normalized).toMatchObject({
+      title: 'SwiftUI',
+      permalink: 'https://developer.apple.com/swiftui/',
+      type: 'webPage',
+    });
+  });
+
+  it('skips entries with neither title nor URL instead of rendering a blank heading', () => {
+    expect(normalizeSearchResult({}, 'only an excerpt')).toBeNull();
+    const merged = dedupeMerge([{ description: 'no title, no link' }], [], 5);
+    expect(merged).toHaveLength(0);
+  });
+
+  it('dedupes by URL and clamps results to the backend maximum of 20', () => {
+    const many = Array.from({ length: 30 }, (_, i) => ({
+      title: `Result ${i}`,
+      permalink: `https://developer.apple.com/documentation/x/r${i}`,
+    }));
+    const merged = dedupeMerge(many, [], 30);
+    expect(merged).toHaveLength(20);
+
+    const duplicate = dedupeMerge(
+      [{ title: 'A', permalink: '/dupe' }, { title: 'B', permalink: '/dupe' }],
+      [],
+      10,
+    );
+    expect(duplicate).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. search_scope: mapped to Apple's scope-object DSL
+// ---------------------------------------------------------------------------
+
+describe('resolveSearchScope', () => {
+  it('returns undefined for the default empty scope', () => {
+    expect(resolveSearchScope('')).toBeUndefined();
+    expect(resolveSearchScope(undefined)).toBeUndefined();
+  });
+
+  it('maps supported names to Apple scope objects', () => {
+    expect(resolveSearchScope('documentation')).toEqual(SEARCH_SCOPES.documentation);
+    expect(resolveSearchScope('sample_code')).toEqual({ kind: 'documentationRole', value: 'sampleCode' });
+  });
+
+  it('rejects unsupported values (framework scoping) with an actionable message', () => {
+    expect(() => resolveSearchScope('swiftui')).toThrow(/Unsupported search_scope "swiftui"/);
+    expect(() => resolveSearchScope('swiftui')).toThrow(/documentation, video, sample_code, wwdc26/);
+  });
+
+  it('sends the scope object in the request body instead of a raw string', async () => {
+    mockFetch.mockResolvedValue(jsonlResponse(pureAppendStream()));
+
+    await searchAppleDocsApi('UIButton configuration', 5, 'documentation');
+
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.searchScope).toEqual(SEARCH_SCOPES.documentation);
+    expect(typeof body.searchScope).toBe('object');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. partial results: a stalled stream returns what was parsed
+// ---------------------------------------------------------------------------
+
+function stallingStream(payload: string, signal: AbortSignal | undefined): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(payload));
+      signal?.addEventListener('abort', () => {
+        try {
+          controller.error(new Error('aborted by test'));
+        } catch {
+          // already errored/closed
+        }
+      });
+    },
+    // Never pull: simulates a backend that stopped sending bytes.
+  });
+}
+
+describe('partial results on a stalled stream', () => {
+  afterEach(() => {
+    delete process.env.SEARCH_API_IDLE_TIMEOUT_MS;
+  });
+
+  it('returns parsed quickSearch results with a partial reason instead of isError', async () => {
+    process.env.SEARCH_API_IDLE_TIMEOUT_MS = '40';
+    const payload = jsonl(
+      quickSearchEvent(
+        { metadata: makeMetadata() },
+        { metadata: makeMetadata({ title: 'UIButton', permalink: '/uikit/uibutton' }) },
+      ),
+      QUICK_SEARCH_FINISHED,
+    );
+
+    mockFetch.mockImplementation((_url: string, init: RequestInit) => Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      body: stallingStream(payload, init.signal ?? undefined),
+      text: () => Promise.resolve(payload),
+    } as unknown as Response));
+
+    const outcome = await searchAppleDocsApiDetailed('UIButton configuration');
+
+    expect(outcome.partial).toBe(true);
+    expect(outcome.partialReason).toMatch(/Partial results:.*stalled/);
+    expect(outcome.results.length).toBeGreaterThan(0);
+    expect(outcome.results[0].title).toBe('UIButtonConfiguration');
+    // Aborted streams must not poison the cache.
+    expect(outcome.cached).toBe(false);
+  });
+
+  it('surfaces partial data in the markdown output', async () => {
+    process.env.SEARCH_API_IDLE_TIMEOUT_MS = '40';
+    const payload = jsonl(
+      quickSearchEvent({ metadata: makeMetadata() }),
+      QUICK_SEARCH_FINISHED,
+    );
+    mockFetch.mockImplementation((_url: string, init: RequestInit) => Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      body: stallingStream(payload, init.signal ?? undefined),
+      text: () => Promise.resolve(payload),
+    } as unknown as Response));
+
+    const result = await searchAppleDocs('UIButton configuration');
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toMatch(/Partial results/);
+    expect(result.content[0].text).toContain('### 1.');
+  });
+
+  it('does not retry a stalled stream (single request)', async () => {
+    process.env.SEARCH_API_IDLE_TIMEOUT_MS = '40';
+    mockFetch.mockImplementation((_url: string, init: RequestInit) => Promise.resolve({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      body: stallingStream(jsonl(QUICK_SEARCH_FINISHED), init.signal ?? undefined),
+      text: () => Promise.resolve(''),
+    } as unknown as Response));
+
+    await searchAppleDocsApiDetailed('stall-once');
+
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });

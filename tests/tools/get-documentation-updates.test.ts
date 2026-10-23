@@ -328,3 +328,49 @@ describe('get-documentation-updates', () => {
     expect(techIndex).toBeLessThan(releaseIndex);
   });
 });
+
+describe('get-documentation-updates — Past releases classification', () => {
+  it('classifies WWDC articles nested under "Past releases" as wwdc', async () => {
+    (httpClient.getJson as jest.Mock).mockImplementation((url: unknown) => {
+      const urlStr = url as string;
+      if (urlStr.includes('Updates.json')) {
+        return Promise.resolve({
+          topicSections: [
+            {
+              title: 'Past releases',
+              identifiers: [
+                'doc://com.apple.Updates/documentation/Updates/wwdc2024',
+                'doc://com.apple.Updates/documentation/Updates/SwiftUI',
+              ],
+              anchor: 'Past-releases',
+            },
+          ],
+          references: {
+            'doc://com.apple.Updates/documentation/Updates/wwdc2024': {
+              type: 'topic', title: 'WWDC24', url: '/documentation/updates/wwdc2024',
+              abstract: [{ text: 'Highlights of WWDC24.', type: 'text' }],
+              kind: 'article', role: 'collectionGroup',
+            },
+            'doc://com.apple.Updates/documentation/Updates/SwiftUI': {
+              type: 'topic', title: 'SwiftUI updates', url: '/documentation/updates/swiftui',
+              abstract: [{ text: 'Changes to SwiftUI.', type: 'text' }],
+              kind: 'article', role: 'article',
+            },
+          },
+        });
+      }
+      if (urlStr.includes('index/updates')) {
+        return Promise.resolve({ interfaceLanguages: { swift: [
+          { path: '/documentation/updates/wwdc2024', title: 'WWDC24', type: 'collection', beta: false },
+        ] } });
+      }
+      throw new Error('Unknown URL');
+    });
+
+    const result = await handleGetDocumentationUpdates('wwdc', undefined, '2024');
+
+    expect(result).toContain('WWDC24');
+    expect(result).not.toContain('SwiftUI updates');
+    expect(result).toContain('2024');
+  });
+});

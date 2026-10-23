@@ -18,7 +18,7 @@ import { handleGetDocumentationUpdates } from './tools/get-documentation-updates
 import { handleGetTechnologyOverviews } from './tools/get-technology-overviews.js';
 import { handleGetSampleCode } from './tools/get-sample-code.js';
 import { isValidAppleDeveloperUrl } from './utils/url-converter.js';
-import { validateInput, ErrorType, createStandardErrorResponse, createToolErrorResponse } from './utils/error-handler.js';
+import { validateInput, ErrorType, createStandardErrorResponse, createToolErrorResponse, describeError } from './utils/error-handler.js';
 import { preloadPopularFrameworks } from './utils/preloader.js';
 import { warmUpCaches, schedulePeriodicCacheRefresh } from './utils/cache-warmer.js';
 import { logger } from './utils/logger.js';
@@ -26,6 +26,44 @@ import { API_LIMITS } from './utils/constants.js';
 
 export default class AppleDeveloperDocsMCPServer {
   private server: Server;
+
+  /**
+   * Whether a tool's plain-text result represents a failure.
+   *
+   * Tool implementations signal failures by returning an "Error: ..." string;
+   * checking the prefix lets the protocol response be marked accordingly.
+   */
+  private looksLikeErrorText(text: unknown): boolean {
+    return typeof text === 'string' && text.startsWith('Error:');
+  }
+
+  /**
+   * Wrap a tool's plain-text result into an MCP text response, setting
+   * `isError` when the text starts with "Error:".
+   */
+  private wrapToolText(text: string): { content: Array<{ type: 'text'; text: string }>; isError?: boolean } {
+    return {
+      content: [{ type: 'text' as const, text }],
+      ...(this.looksLikeErrorText(text) ? { isError: true } : {}),
+    };
+  }
+
+  /**
+   * Mark an already-built response as an error when its first text block
+   * starts with "Error:" and `isError` was not set by the handler.
+   */
+  private normalizeTextResponse<T extends { content?: Array<{ type: string; text: string }>; isError?: boolean }>(
+    response: T,
+  ): T {
+    if (!response || !Array.isArray(response.content) || response.isError === true) {
+      return response;
+    }
+    const firstText = response.content.find(block => block.type === 'text');
+    if (this.looksLikeErrorText(firstText?.text)) {
+      return { ...response, isError: true };
+    }
+    return response;
+  }
 
   /**
    * Helper method to handle async operations with consistent error handling
@@ -36,14 +74,7 @@ export default class AppleDeveloperDocsMCPServer {
   ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
     try {
       const result = await operation();
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: result as string,
-          },
-        ],
-      };
+      return this.wrapToolText(result as string);
     } catch (error) {
       // If error is already an AppError, use tool-specific suggestions
       if (error && typeof error === 'object' && 'type' in error) {
@@ -85,7 +116,7 @@ export default class AppleDeveloperDocsMCPServer {
       const { name, arguments: args } = request.params;
 
       try {
-        return await handleToolCall(name, args, this);
+        return this.normalizeTextResponse(await handleToolCall(name, args, this));
       } catch (error) {
         // Zod schema validation failures (e.g. limit out of range) would
         // otherwise dump a raw multi-issue ZodError JSON array on the caller.
@@ -104,9 +135,18 @@ export default class AppleDeveloperDocsMCPServer {
           };
         }
 
-        const appError = error instanceof Error
-          ? { type: 'UNKNOWN' as const, message: error.message, originalError: error }
-          : { type: 'UNKNOWN' as const, message: 'An unknown error occurred' };
+        // Use the actual message when the thrown value carries one; otherwise
+        // keep the generic message (e.g. for a bare string rejection).
+        const carriesMessage =
+          !!error &&
+          typeof error === 'object' &&
+          typeof (error as { message?: unknown }).message === 'string' &&
+          (error as { message: string }).message.trim() !== '';
+        const appError = {
+          type: 'UNKNOWN' as const,
+          message: carriesMessage ? describeError(error) : 'An unknown error occurred',
+          originalError: error instanceof Error ? error : undefined,
+        };
 
         logger.error(`Tool ${name} failed:`, appError);
 

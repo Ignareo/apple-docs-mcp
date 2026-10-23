@@ -7,6 +7,7 @@ import { httpClient } from '../../utils/http-client.js';
 import { logger } from '../../utils/logger.js';
 import { WWDC_URLS } from '../../utils/constants.js';
 import type { VideoListItem } from '../../types/wwdc.js';
+import { describeError } from '../../utils/error-handler.js';
 
 /**
  * Extract all WWDC video list for specified year
@@ -70,7 +71,7 @@ export async function extractVideoList(year: string): Promise<VideoListItem[]> {
 
   } catch (error) {
     logger.error(`Failed to extract video list for WWDC${year}:`, error);
-    throw new Error(`Failed to extract video list for WWDC${year}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`Failed to extract video list for WWDC${year}: ${describeError(error)}`);
   }
 }
 

@@ -24,6 +24,15 @@ export function convertToJsonApiUrl(webUrl: string): string | null {
 
     let path = urlObj.pathname;
 
+    // Human Interface Guidelines pages have their own JSON endpoint under
+    // /tutorials/data/design/human-interface-guidelines/... — the plain web
+    // page is an HTML app shell, so fetching it and parsing JSON fails.
+    if (path.startsWith('/design/human-interface-guidelines')) {
+      const rest = path.replace('/design/human-interface-guidelines', '');
+      const suffix = rest === '' || rest === '/' ? '' : rest;
+      return `https://developer.apple.com/tutorials/data/design/human-interface-guidelines${suffix}.json`;
+    }
+
     // For documentation URLs, format for the JSON API
     if (path.includes('/documentation/')) {
       // Remove /documentation/ prefix

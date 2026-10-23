@@ -27,6 +27,19 @@ export interface AppleSearchMetadata {
   hierarchy?: string;
   permalink?: string;
   kind?: string;
+  /** `documentation` | `developer` | `webPage` | `pdf` — selects the shape. */
+  metadataKind?: string;
+  /** `developer` (WWDC videos/collections) carry plural arrays. */
+  titles?: string[];
+  descriptions?: string[];
+  permalinks?: string[];
+  itemTypes?: string[];
+  projectNames?: string[];
+  availabilityDates?: string[];
+  mediaDurations?: number[];
+  /** `webPage`/`pdf` items use a source URL instead of a permalink. */
+  sourceURL?: string;
+  pageCount?: number;
 }
 
 /**
@@ -36,6 +49,7 @@ export interface AppleSearchStreamItem {
   excerpt?: string;
   value?: {
     metadata?: AppleSearchMetadata;
+    origin?: string;
   };
 }
 
@@ -48,6 +62,8 @@ export interface AppleSearchApiResult {
   availability: string;
   hierarchy: string;
   permalink: string;
+  /** Result type (`symbol`, `article`, `Video`, `webPage`, …), when known. */
+  type?: string;
 }
 
 /**

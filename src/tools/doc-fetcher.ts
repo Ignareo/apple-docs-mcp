@@ -2,15 +2,22 @@ import { apiCache, generateEnhancedCacheKey } from '../utils/cache.js';
 import { convertToJsonApiUrl } from '../utils/url-converter.js';
 import { httpClient } from '../utils/http-client.js';
 import type { AppleDocJSON } from '../types/apple-docs.js';
-import type { ContentSection, ContentItem } from '../types/content-sections.js';
+import type { ContentSection } from '../types/content-sections.js';
 import { logger } from '../utils/logger.js';
 import { PROCESSING_LIMITS } from '../utils/constants.js';
+import { describeError } from '../utils/error-handler.js';
 import {
   formatDocumentHeader,
   formatDocumentAbstract,
   formatPlatformAvailability,
   formatSeeAlsoSection,
+  formatDeprecationSection,
+  formatContentBlocks,
+  formatInlineContent,
+  formatCodeBlock,
   isSpecificAPIDocument,
+  generateApiUrlFromIdentifier,
+  getReferenceTitle,
 } from './doc-formatter.js';
 
 
@@ -30,6 +37,9 @@ function formatJsonDocumentation(
 
   // Add abstract
   content += formatDocumentAbstract(jsonData);
+
+  // Add deprecation notice (migration guidance) when Apple provides one
+  content += formatDeprecationSection(jsonData);
 
   // Check if this is a specific API/symbol or an API collection
   if (isSpecificAPIDocument(jsonData)) {
@@ -102,7 +112,7 @@ function formatSpecificAPIContent(jsonData: AppleDocJSON): string {
             const declaration = typedSection.declarations[0].tokens
               .map((token) => token.text ?? '')
               .join('');
-            content += `\`\`\`swift\n${declaration}\`\`\`\n\n`;
+            content += formatCodeBlock(declaration);
           }
           break;
 
@@ -112,9 +122,7 @@ function formatSpecificAPIContent(jsonData: AppleDocJSON): string {
             typedSection.parameters.forEach((param) => {
               content += `**${param.name}**: `;
               if (param.content?.[0]?.inlineContent) {
-                const paramDesc = param.content[0].inlineContent
-                  .map((inline) => (inline as { text?: string })?.text ?? '')
-                  .join('');
+                const paramDesc = formatInlineContent(param.content[0].inlineContent, jsonData);
                 content += `${paramDesc}\n\n`;
               }
             });
@@ -122,39 +130,25 @@ function formatSpecificAPIContent(jsonData: AppleDocJSON): string {
           break;
 
         case 'content':
-          if (typedSection.content && Array.isArray(typedSection.content)) {
-            typedSection.content.forEach((item) => {
-              const contentItem = item as ContentItem;
-              if (contentItem.type === 'heading') {
-                content += `## ${contentItem.text}\n\n`;
-              } else if (contentItem.type === 'paragraph' && contentItem.inlineContent) {
-                const paragraphText = contentItem.inlineContent
-                  .map((inline: any) => {
-                    if (inline.type === 'text') {
-                      return inline.text ?? '';
-                    } else if (inline.type === 'codeVoice') {
-                      return `\`${(inline).code ?? ''}\``;
-                    } else if (inline.type === 'reference' && (inline).identifier) {
-                      const apiName = ((inline).identifier as string).split('/').pop() ?? (inline).identifier;
-                      return `\`${apiName}\``;
-                    }
-                    return '';
-                  })
-                  .join('');
-                if (paragraphText.trim()) {
-                  content += `${paragraphText}\n\n`;
-                }
-              } else if (contentItem.type === 'codeListing' && (contentItem as any).code) {
-                content += `\`\`\`${(contentItem as any).syntax ?? 'swift'}\n${(contentItem as any).code.join('\n')}\`\`\`\n\n`;
-              }
-            });
-          }
+          content += formatContentBlocks(typedSection.content, jsonData);
           break;
       }
     });
   }
 
   return content;
+}
+
+/**
+ * Check whether a block is Apple's own "Overview" heading, which already
+ * provides the section heading on most pages.
+ */
+function isOverviewHeading(block: unknown): boolean {
+  if (block === null || typeof block !== 'object') {
+    return false;
+  }
+  const typed = block as { type?: string; text?: string };
+  return typed.type === 'heading' && (typed.text ?? '').trim().toLowerCase() === 'overview';
 }
 
 /**
@@ -165,51 +159,20 @@ function formatAPICollectionContent(jsonData: AppleDocJSON): string {
 
   // Add primary content sections (Overview)
   if (jsonData.primaryContentSections && Array.isArray(jsonData.primaryContentSections)) {
-    content += '## Overview\n\n';
+    const contentBlocks: unknown[] = [];
     jsonData.primaryContentSections.forEach((section) => {
       const typedSection = section as ContentSection;
-      if (typedSection.kind === 'content' && typedSection.content) {
-        typedSection.content.forEach((item: any) => {
-          if (item.type === 'paragraph' && item.inlineContent) {
-            const paragraphText = item.inlineContent
-              .map((inline: any) => {
-                if (inline.type === 'text') {
-                  return inline.text ?? '';
-                } else if (inline.type === 'reference' && inline.identifier) {
-                  // Extract API name from identifier
-                  const apiName = inline.identifier.split('/').pop() ?? inline.identifier;
-                  return `\`${apiName}\``;
-                }
-                return '';
-              })
-              .join('');
-            if (paragraphText.trim()) {
-              content += `${paragraphText}\n\n`;
-            }
-          } else if (item.type === 'unorderedList' && item.items) {
-            item.items.forEach((listItem: any) => {
-              if (listItem.content?.[0]?.inlineContent) {
-                const listText = listItem.content[0].inlineContent
-                  .map((inline: any) => {
-                    if (inline.type === 'text') {
-                      return inline.text ?? '';
-                    } else if (inline.type === 'reference' && inline.identifier) {
-                      const apiName = inline.identifier.split('/').pop() ?? inline.identifier;
-                      return `\`${apiName}\``;
-                    }
-                    return '';
-                  })
-                  .join('');
-                if (listText.trim()) {
-                  content += `- ${listText}\n`;
-                }
-              }
-            });
-            content += '\n';
-          }
-        });
+      if (typedSection.kind === 'content' && Array.isArray(typedSection.content)) {
+        contentBlocks.push(...typedSection.content);
       }
     });
+
+    // Article and collection pages start with Apple's own "Overview" heading;
+    // keep the section heading stable on pages that do not.
+    if (!isOverviewHeading(contentBlocks[0])) {
+      content += '## Overview\n\n';
+    }
+    content += formatContentBlocks(contentBlocks, jsonData);
   }
 
   // Add topic sections (API Collections) - this is the most important part
@@ -221,12 +184,10 @@ function formatAPICollectionContent(jsonData: AppleDocJSON): string {
         content += `### ${section.title}\n\n`;
 
         section.identifiers.forEach((identifier: string) => {
-          // Extract the API name from the identifier
-          const apiName = identifier.split('/').pop() ?? identifier;
-          // Create a documentation URL for the API
-          const apiPath = identifier.replace('doc://com.apple.SwiftUI/documentation/', '');
-          const apiUrl = `https://developer.apple.com/documentation/${apiPath}`;
-          content += `- [\`${apiName}\`](${apiUrl})\n`;
+          // Use references to get proper title and URL, fall back to identifier
+          const apiName = getReferenceTitle(jsonData, identifier);
+          const apiUrl = generateApiUrlFromIdentifier(identifier);
+          content += `- [${apiName}](${apiUrl})\n`;
         });
         content += '\n';
       }
@@ -324,16 +285,7 @@ export async function fetchAppleDocJson(
 
     return result;
   } catch (error) {
-    let errorMessage: string;
-
-    // Handle AppError objects from http-client
-    if (error && typeof error === 'object' && 'message' in error) {
-      errorMessage = (error as any).message;
-    } else if (error instanceof Error) {
-      errorMessage = error.message;
-    } else {
-      errorMessage = String(error);
-    }
+    const errorMessage = describeError(error);
 
     logger.error('Error fetching Apple doc JSON:', errorMessage);
 

@@ -11,22 +11,25 @@ import { searchFrameworkSymbolsTool } from './search-framework-symbols.js';
 export const toolDefinitions: Tool[] = [
   {
     name: 'search_apple_docs',
-    description: 'Search Apple Developer Documentation for APIs, frameworks, guides, and samples (backed by Apple\'s official search API, WWDC23+ coverage). Best for finding specific APIs, classes, or methods. For browsing sample code projects, use get_sample_code. For WWDC videos, use the dedicated WWDC tools (list_wwdc_videos, search_wwdc_content).',
+    description: 'Search Apple Developer Documentation for APIs, frameworks, guides, samples and WWDC videos (backed by Apple\'s official search backend). Returns up to ~20 results with title, type, hierarchy, availability and URL; a stalled backend returns partial results with an explicit warning. For complete sample projects use get_sample_code; for full WWDC session content use the WWDC tools.',
     inputSchema: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: 'Search query for Apple Developer Documentation. Tips: Use specific API names (e.g., "UIViewController"), framework names (e.g., "SwiftUI"), or technical terms. Avoid generic terms like "how to" or "tutorial". Examples: "NSPredicate", "SwiftUI List", "Core Data migration", "URLSession authentication".',
+          description: 'Search query: API name ("UIViewController"), framework ("SwiftUI"), or technical term ("Core Data migration"). Prefer specific names over "how to" phrasing. Chinese/Japanese queries work but documentation results stay in English.',
         },
         limit: {
           type: 'integer',
-          description: 'Max results to return (1-30, default 10).',
+          description: "Max results (1-20, default 10). Apple's backend returns at most ~20 per query.",
           default: 10,
+          minimum: 1,
+          maximum: 20,
         },
         search_scope: {
           type: 'string',
-          description: 'Optional Apple search scope filter (pass-through; empty = all scopes).',
+          description: "Optional content filter: '' (all), 'documentation', 'video', 'sample_code' or 'wwdc26'. Framework scoping (e.g. 'swiftui') is not supported.",
+          enum: ['', 'documentation', 'video', 'sample_code', 'wwdc26'],
           default: '',
         },
       },
@@ -73,13 +76,13 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'list_technologies',
-    description: 'Browse all Apple technologies and frameworks by category. Essential for discovering available frameworks and understanding Apple\'s technology ecosystem. Use this when: exploring what\'s available, finding framework identifiers for search_framework_symbols, checking beta status.',
+    description: 'Browse Apple technologies and frameworks by category, with the true total count. Useful for discovering framework identifiers for search_framework_symbols and checking beta/deprecation status.',
     inputSchema: {
       type: 'object',
       properties: {
         category: {
           type: 'string',
-          description: 'Filter by category (case-sensitive). Popular: "App frameworks" (SwiftUI, UIKit), "Graphics and games" (Metal, SpriteKit), "App services" (CloudKit, StoreKit), "Media" (AVFoundation), "System" (Foundation). Leave empty to see all categories.',
+          description: 'Filter by category group or technology name/tags (case-insensitive). Popular groups: "App frameworks", "Graphics and games", "App services", "Media", "System"; a technology name like "SwiftUI" also works.',
         },
         language: {
           type: 'string',
@@ -92,7 +95,7 @@ export const toolDefinitions: Tool[] = [
         },
         limit: {
           type: 'number',
-          description: 'Max results per category. Useful for quick overviews. Default: 200',
+          description: 'Max results per category (default 10). The response always reports the true total, e.g. "Total: 407 technologies (showing 110 of 407)".',
         },
       },
       required: [],
@@ -333,7 +336,7 @@ export const toolDefinitions: Tool[] = [
       properties: {
         year: {
           type: 'string',
-          description: 'WWDC year ("2025", "2024", etc.) or "all". Available: 2020-2025. Example: "2025" for latest.',
+          description: 'WWDC year ("2025", "2024", etc.) or "all". Available: 2014-2025 (snapshot 2025-07-18). Example: "2025" for latest.',
         },
         topic: {
           type: 'string',
@@ -345,7 +348,7 @@ export const toolDefinitions: Tool[] = [
         },
         limit: {
           type: 'number',
-          description: 'Max videos to show (default: 50). Videos include title, duration, and content indicators.',
+          description: 'Max videos to show (default: 50). Output reports "Showing X of Y"; each entry includes its videoId for get_wwdc_video.',
         },
       },
       required: [],
@@ -357,7 +360,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'search_wwdc_content',
-    description: 'Full-text search across all WWDC video transcripts and code examples. Find specific discussions, API mentions, or implementation examples. More powerful than list_wwdc_videos for finding specific content.',
+    description: 'Full-text search across all WWDC video transcripts and code examples. Find specific discussions, API mentions, or implementation examples. More powerful than list_wwdc_videos for finding specific content. Snippets are budgeted (snippetChars) and the header reports total matches vs shown.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -372,15 +375,23 @@ export const toolDefinitions: Tool[] = [
         },
         year: {
           type: 'string',
-          description: 'Limit to specific year ("2025", "2024", etc.). Leave empty for all years.',
+          description: 'Limit to specific year ("2025", "2024", etc.). Leave empty for all years. Available: 2014-2025 (snapshot 2025-07-18).',
         },
         language: {
           type: 'string',
-          description: 'Code language filter ("swift", "objc", "javascript"). Only for code search.',
+          description: 'Code language filter. Bundled data contains only "swift".',
         },
         limit: {
           type: 'number',
-          description: 'Max results (default: 20). Results include context snippets.',
+          description: 'Max videos in the result set (default: 10). Header reports "Total matches: N (showing X)".',
+        },
+        snippetChars: {
+          type: 'number',
+          description: 'Max characters per snippet (default: 300, max: 2000). Longer snippets are truncated with an ellipsis marker.',
+        },
+        matchesPerVideo: {
+          type: 'number',
+          description: 'Max matches shown per video (default: 1, max: 5).',
         },
       },
       required: ['query'],
@@ -392,7 +403,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'get_wwdc_video',
-    description: 'Access complete WWDC session content including full transcript, code examples, and resources. Use after finding videos with list_wwdc_videos or search_wwdc_content. Provides offline access to entire session content.',
+    description: 'Access WWDC session content including transcript, code examples, and resources. Use after finding videos with list_wwdc_videos or search_wwdc_content. Transcripts are budgeted (maxTranscriptChars, default 12000) and can be narrowed to keyword windows with query; output states when truncation occurred.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -406,11 +417,27 @@ export const toolDefinitions: Tool[] = [
         },
         includeTranscript: {
           type: 'boolean',
-          description: 'Include full session transcript with timestamps. Default: true',
+          description: 'Include the session transcript. Default: true',
         },
         includeCode: {
           type: 'boolean',
-          description: 'Include all code examples from the session. Default: true',
+          description: 'Include code examples from the session (each capped at 1500 chars). Default: true',
+        },
+        maxTranscriptChars: {
+          type: 'number',
+          description: 'Transcript character budget (default: 12000, 0 = unlimited). When capped, output ends with a truncation marker.',
+        },
+        query: {
+          type: 'string',
+          description: 'Optional keyword: return only transcript lines containing it, with ±1 line of context. Best way to shrink large transcripts.',
+        },
+        includeResources: {
+          type: 'boolean',
+          description: 'Include resource links (video downloads, sample code, etc.). Default: true',
+        },
+        includeRelatedVideos: {
+          type: 'boolean',
+          description: 'Include related videos. Default: true',
         },
       },
       required: ['year', 'videoId'],
@@ -436,15 +463,19 @@ export const toolDefinitions: Tool[] = [
         },
         year: {
           type: 'string',
-          description: 'WWDC year filter ("2025", "2024", etc.).',
+          description: 'WWDC year filter ("2025", "2024", etc.). Available: 2014-2025 (snapshot 2025-07-18).',
         },
         language: {
           type: 'string',
-          description: 'Programming language: "swift", "objc", "javascript", "metal".',
+          description: 'Programming language filter. Bundled data contains only "swift".',
         },
         limit: {
           type: 'number',
-          description: 'Max examples (default: 30). Each includes code and source video info.',
+          description: 'Max examples (default: 30). Header reports "Total examples: N (showing X)".',
+        },
+        maxCodeChars: {
+          type: 'number',
+          description: 'Max characters per code example (default: 1500, 0 = unlimited). Longer examples are truncated with a marker.',
         },
       },
       required: [],
@@ -470,7 +501,7 @@ export const toolDefinitions: Tool[] = [
         },
         year: {
           type: 'string',
-          description: 'Filter topic videos by year. Only when browsing specific topic.',
+          description: 'Filter topic videos by year. Only when browsing specific topic. Available: 2014-2025 (snapshot 2025-07-18).',
         },
         limit: {
           type: 'number',
@@ -524,7 +555,7 @@ export const toolDefinitions: Tool[] = [
   },
   {
     name: 'list_wwdc_years',
-    description: 'List all available WWDC years with video counts and statistics. Shows which years have content available and how many videos each year contains.',
+    description: 'List all available WWDC years with video counts and statistics, plus the bundled data snapshot (e.g. "Snapshot: 2025-07-18 · 2014–2025 · 1,266 sessions"). Shows which years have content available and how many videos each year contains.',
     inputSchema: {
       type: 'object',
       properties: {},

@@ -108,7 +108,9 @@ describe('searchFrameworkSymbols', () => {
 
       const result = await searchFrameworkSymbols('invalidframework', 'class', undefined, 'swift', 10);
 
-      expect(result).toContain('Error searching classes: 404 Not Found');
+      expect(result).toContain('Error: search_framework_symbols failed: 404 Not Found');
+      expect(result).toContain('framework "invalidframework" not found');
+      expect(result).toContain('list_technologies');
     });
 
     it('should handle empty framework name', async () => {
@@ -117,7 +119,7 @@ describe('searchFrameworkSymbols', () => {
 
       const result = await searchFrameworkSymbols('', 'class', undefined, 'swift', 10);
 
-      expect(result).toContain('Error searching classes');
+      expect(result).toContain('Error: search_framework_symbols failed');
     });
 
     it('should handle unsupported language', async () => {
@@ -162,7 +164,7 @@ describe('searchFrameworkSymbols', () => {
 
       const result = await searchFrameworkSymbols('uikit', 'class', undefined, 'swift', 10);
 
-      expect(result).toContain('Error searching classes: Network error');
+      expect(result).toContain('Error: search_framework_symbols failed: Network error');
     });
   });
 

@@ -46,6 +46,13 @@ jest.mock('../src/utils/cache.js', () => ({
     set: jest.fn(),
     has: jest.fn().mockReturnValue(false)
   },
+  // search_apple_docs caches successful queries; keep it inert in tests.
+  searchCache: {
+    get: jest.fn().mockReturnValue(undefined),
+    set: jest.fn(),
+    clear: jest.fn(),
+    getStats: jest.fn().mockReturnValue({ size: 0, maxSize: 200, hits: 0, misses: 0, hitRate: '0%' })
+  },
   generateUrlCacheKey: jest.fn().mockReturnValue('test-cache-key')
 }));
 

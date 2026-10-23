@@ -80,6 +80,7 @@ describe('list-technologies', () => {
       expect(result).toContain('[SwiftUI]');
       expect(result).toContain('## App Frameworks');
       expect(result).toContain('[Foundation]');
+      expect(result).toContain('*Total: 3 technologies (showing 3 of 3)*');
     });
 
     it('should filter by category', async () => {
@@ -91,6 +92,18 @@ describe('list-technologies', () => {
       expect(result).toContain('[Foundation]');
       expect(result).not.toContain('## Featured');
       expect(result).not.toContain('[SwiftUI]');
+      expect(result).toContain('*Total: 1 technology (showing 1 of 1)*');
+    });
+
+    it('should match category against technology names and tags', async () => {
+      mockHttpClient.getJson.mockResolvedValue(mockTechnologiesResponse);
+
+      const result = await handleListTechnologies('SwiftUI');
+
+      expect(result).toContain('[SwiftUI]');
+      expect(result).not.toContain('[UIKit]');
+      expect(result).not.toContain('[Foundation]');
+      expect(result).not.toBe('No technologies found matching the specified criteria.');
     });
 
     it('should handle case-insensitive category filtering', async () => {
@@ -298,20 +311,20 @@ describe('list-technologies', () => {
 
       mockHttpClient.getJson.mockResolvedValue(limitTestResponse);
 
-      // Test with limit of 2
+      // limit is per category: 2 from each group
       const result = await handleListTechnologies(undefined, undefined, true, 2);
 
-      // Should contain first 2 technologies
-      expect(result).toContain('SwiftUI');
-      expect(result).toContain('UIKit');
-      
-      // Should NOT contain the 3rd and beyond technologies
-      expect(result).not.toContain('AppKit');
-      expect(result).not.toContain('Core Data');
-      expect(result).not.toContain('CloudKit');
-      
-      // Should show correct count
-      expect(result).toContain('Found 2 technologies');
+      // First 2 of each category are shown
+      expect(result).toContain('[SwiftUI]');
+      expect(result).toContain('[UIKit]');
+      expect(result).toContain('[Core Data]');
+      expect(result).toContain('[CloudKit]');
+
+      // Should NOT contain the 3rd technology of the first category
+      expect(result).not.toContain('[AppKit]');
+
+      // Should report the true total and how many are shown
+      expect(result).toContain('*Total: 5 technologies (showing 4 of 5)*');
     });
 
     it('should handle limit parameter across multiple groups', async () => {
@@ -341,19 +354,37 @@ describe('list-technologies', () => {
 
       mockHttpClient.getJson.mockResolvedValue(multiGroupResponse);
 
-      // Test with limit of 3 (should span across groups)
+      // limit is per category, so 3 is enough for both 2-item groups
       const result = await handleListTechnologies(undefined, undefined, true, 3);
 
-      // Should contain first 3 technologies total
       expect(result).toContain('Tech 1');
       expect(result).toContain('Tech 2');
       expect(result).toContain('Tech 3');
-      
-      // Should NOT contain the 4th technology
-      expect(result).not.toContain('Tech 4');
-      
-      // Should show correct count
-      expect(result).toContain('Found 3 technologies');
+      expect(result).toContain('Tech 4');
+
+      expect(result).toContain('*Total: 4 technologies (showing 4 of 4)*');
+    });
+
+    it('should report the true total across all categories', async () => {
+      const groups = Array.from({ length: 11 }, (_, groupIndex) => ({
+        name: `Group ${groupIndex}`,
+        technologies: Array.from({ length: 37 }, (_, techIndex) => ({
+          title: `Tech ${groupIndex}-${techIndex}`,
+          identifier: `tech-${groupIndex}-${techIndex}`,
+          tags: [],
+          languages: ['swift'],
+        })),
+      }));
+
+      mockHttpClient.getJson.mockResolvedValue({
+        sections: [{ kind: 'technologies', groups }],
+      });
+
+      const result = await handleListTechnologies();
+
+      // 11 groups x 37 technologies = 407 total; the default is 10 per category,
+      // so a default call shows 110 while still reporting the true total.
+      expect(result).toContain('*Total: 407 technologies (showing 110 of 407)*');
     });
 
     it('should handle zero limit', async () => {
@@ -361,7 +392,8 @@ describe('list-technologies', () => {
 
       const result = await handleListTechnologies(undefined, undefined, true, 0);
 
-      expect(result).toContain('No technologies found matching the specified criteria.');
+      // The true total is still reported even when nothing is shown.
+      expect(result).toContain('*Total: 3 technologies (showing 0 of 3)*');
     });
   });
 });
